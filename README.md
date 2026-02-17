@@ -16,7 +16,7 @@ Manage multiple parallel Claude CLI sessions with worktree isolation and pluggab
 ## Installation
 
 ```sh
-npm install -g claude-swarm
+npm install -g @annix/claude-swarm
 # or run directly via the launcher
 ../claude-swarm/bin/claude-swarm
 ```
@@ -161,7 +161,7 @@ import {
   NullAdapter,
   ConfigAdapter,
   DevServerAdapter,
-} from "claude-swarm";
+} from "@annix/claude-swarm";
 ```
 
 ### Built-in adapters
