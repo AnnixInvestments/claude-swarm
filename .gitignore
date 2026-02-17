@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.js.map
+*.d.ts
+*.d.ts.map
+.parallel-claude-projects.json
+.parallel-claude-app.log

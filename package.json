@@ -1,0 +1,46 @@
+{
+  "name": "claude-swarm",
+  "version": "0.1.0",
+  "description": "Manage multiple parallel Claude CLI sessions with worktree isolation and dev server lifecycle management",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "cli",
+    "worktree",
+    "parallel",
+    "development"
+  ],
+  "homepage": "https://github.com/AnnixInvestments/claude-swarm",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AnnixInvestments/claude-swarm.git"
+  },
+  "license": "MIT",
+  "bin": {
+    "claude-swarm": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "build": "tsc",
+    "dev": "ts-node --transpile-only src/index.ts",
+    "start": "node dist/index.js",
+    "lint": "biome check src",
+    "format": "biome format --write src",
+    "format:check": "biome format src",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@inquirer/prompts": "^7.2.0",
+    "chalk": "^4.1.2"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/node": "^22.0.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
