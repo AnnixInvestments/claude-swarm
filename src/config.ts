@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AppAdapterConfig } from "./adapters/index.js";
 
@@ -19,7 +20,8 @@ export interface SwarmConfig {
 }
 
 const CONFIG_FILE_NAME = ".claude-swarm.json";
-const PROJECTS_CONFIG_FILE_NAME = ".parallel-claude-projects.json";
+const USER_CONFIG_DIR = join(homedir(), ".config", "claude-swarm");
+const PROJECTS_CONFIG_FILE = join(USER_CONFIG_DIR, "projects.json");
 
 export function loadSwarmConfig(projectPath: string): SwarmConfig {
   const configPath = join(projectPath, CONFIG_FILE_NAME);
@@ -35,27 +37,26 @@ export function loadSwarmConfig(projectPath: string): SwarmConfig {
   }
 }
 
-export function loadProjectsConfig(configFile: string): ProjectsConfig {
-  if (!existsSync(configFile)) {
+export function loadProjectsConfig(): ProjectsConfig {
+  if (!existsSync(PROJECTS_CONFIG_FILE)) {
     return { projects: [] };
   }
 
   try {
-    const content = readFileSync(configFile, "utf-8");
+    const content = readFileSync(PROJECTS_CONFIG_FILE, "utf-8");
     return JSON.parse(content) as ProjectsConfig;
   } catch {
     return { projects: [] };
   }
 }
 
-export function saveProjectsConfig(configFile: string, config: ProjectsConfig): void {
+export function saveProjectsConfig(config: ProjectsConfig): void {
   try {
-    writeFileSync(configFile, JSON.stringify(config, null, 2), "utf-8");
-  } catch {
-    // write failure is non-fatal
-  }
+    mkdirSync(USER_CONFIG_DIR, { recursive: true });
+    writeFileSync(PROJECTS_CONFIG_FILE, JSON.stringify(config, null, 2), "utf-8");
+  } catch {}
 }
 
-export function projectsConfigFile(rootDir: string): string {
-  return join(rootDir, PROJECTS_CONFIG_FILE_NAME);
+export function projectsConfigFile(): string {
+  return PROJECTS_CONFIG_FILE;
 }

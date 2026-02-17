@@ -11,13 +11,14 @@ Manage multiple parallel Claude CLI sessions with worktree isolation and pluggab
 - **Process Detection**: Distinguish between active (terminal-attached) and orphaned (detached) sessions
 - **Cleanup Tools**: Kill orphaned sessions individually or in bulk
 - **Pluggable App Adapters**: Manage dev servers for any project via config or built-in adapters
+- **Live Log Viewing**: Tail dev server logs inside the TUI
 
 ## Installation
 
 ```sh
 npm install -g claude-swarm
-# or
-pnpm add -g claude-swarm
+# or run directly via the launcher
+../claude-swarm/bin/claude-swarm
 ```
 
 ## Usage
@@ -28,11 +29,13 @@ Run from any git repository:
 claude-swarm
 ```
 
-The tool will detect the current project and load configuration from `.claude-swarm.json` if present.
+The tool will detect the current project and load configuration from `.claude-swarm.json` in the current directory if present.
 
-## Configuration
+## Project configuration
 
-Create a `.claude-swarm.json` in your project root:
+### `.claude-swarm.json`
+
+Create a `.claude-swarm.json` in your project root to configure the branch prefix and dev servers:
 
 ```json
 {
@@ -40,23 +43,23 @@ Create a `.claude-swarm.json` in your project root:
   "apps": [
     {
       "name": "backend",
-      "start": "pnpm --filter backend dev",
-      "stop": "signal:SIGTERM",
-      "kill": "signal:SIGKILL",
+      "start": "pnpm dev:backend",
+      "stop": "lsof -ti:4001 | xargs kill -15 2>/dev/null; true",
+      "kill": "lsof -ti:4001 | xargs kill -9 2>/dev/null; true",
       "readyPattern": "Nest application successfully started"
     },
     {
       "name": "frontend",
-      "start": "pnpm --filter frontend dev",
-      "stop": "signal:SIGTERM",
-      "kill": "signal:SIGKILL",
-      "readyPattern": "Local:.*http"
+      "start": "pnpm dev:frontend",
+      "stop": "lsof -ti:3000 | xargs kill -15 2>/dev/null; true",
+      "kill": "lsof -ti:3000 | xargs kill -9 2>/dev/null; true",
+      "readyPattern": "Ready in"
     }
   ]
 }
 ```
 
-### Configuration options
+### Configuration fields
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -67,13 +70,85 @@ Create a `.claude-swarm.json` in your project root:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `name` | `string` | Yes | Display name |
-| `start` | `string` | Yes | Command to start the server |
-| `stop` | `string` | Yes | Command or signal to stop gracefully (e.g. `signal:SIGTERM`) |
-| `kill` | `string` | Yes | Command or signal to force-stop (e.g. `signal:SIGKILL`) |
-| `readyPattern` | `string` | No | Regex pattern to detect when the server is ready |
+| `name` | `string` | Yes | Display name shown in the TUI |
+| `start` | `string` | Yes | Shell command to start the server |
+| `stop` | `string` | Yes | Shell command or signal to stop gracefully (e.g. `signal:SIGTERM`) |
+| `kill` | `string` | Yes | Shell command or signal to force-stop (e.g. `signal:SIGKILL`, or `lsof -ti:PORT | xargs kill -9`) |
+| `readyPattern` | `string` | No | Regex to match against stdout/stderr to detect when the server is ready |
 
-## App Adapter Interface
+When `readyPattern` is set, `start` blocks until the pattern matches or the 120 second timeout elapses.
+
+Dev server output is always streamed to `.claude-swarm-<name>.log` in the project directory, regardless of whether `readyPattern` is set. Add `.claude-swarm-*.log` to your `.gitignore`.
+
+### Stop vs Kill commands
+
+- **stop**: Sent first; should request graceful shutdown (e.g. SIGTERM or port-based kill -15)
+- **kill**: Fallback if stop throws; should force-terminate (e.g. SIGKILL or port-based kill -9)
+
+Use port-based kill commands (via `lsof`) for processes spawned through npm/pnpm scripts, as the script process PID differs from the actual server PID:
+
+```
+"stop": "lsof -ti:4001 | xargs kill -15 2>/dev/null; true"
+"kill": "lsof -ti:4001 | xargs kill -9 2>/dev/null; true"
+```
+
+Use signal format for processes you start directly:
+
+```
+"stop": "signal:SIGTERM"
+"kill": "signal:SIGKILL"
+```
+
+## Multi-project support
+
+claude-swarm manages sessions across multiple projects. On first run it detects the current git repo and adds it automatically. Additional projects can be added interactively via the session menu.
+
+Project configurations are saved to `~/.config/claude-swarm/projects.json`. This is a user-level config file shared across all invocations.
+
+### `~/.config/claude-swarm/projects.json`
+
+```json
+{
+  "projects": [
+    {
+      "name": "myapp",
+      "path": "/Users/you/dev/myapp",
+      "worktreeDir": "/Users/you/dev/myapp-worktrees"
+    }
+  ],
+  "defaultProject": "myapp"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `projects[].name` | `string` | Display name |
+| `projects[].path` | `string` | Absolute path to the git repo root |
+| `projects[].worktreeDir` | `string` | Where worktrees are created (default: `../name-worktrees` sibling) |
+| `defaultProject` | `string` | Name of the project to select on startup |
+
+## Bin launcher
+
+The `bin/claude-swarm` script provides hash-based auto-install/build: it only runs `npm install` or `npm run build` when `package-lock.json` or `src/` files have changed since the last run. This means subsequent invocations start instantly.
+
+```sh
+# From annix:
+pnpm claude-swarm
+
+# Directly:
+../claude-swarm/bin/claude-swarm
+```
+
+## Branch workflow
+
+Claude sessions work on branches with the configured prefix (default `claude/`). The TUI provides:
+
+- **Branch listing** — all claude branches with ahead/behind status
+- **Rebase** — rebase a claude branch onto main
+- **Approve** — rebase + fast-forward merge + delete in one step
+- **Cherry-pick** — pull specific commits from a claude branch for testing on main
+
+## App Adapter interface
 
 You can use the built-in adapters programmatically:
 
@@ -85,16 +160,20 @@ import {
   ViteAdapter,
   NullAdapter,
   ConfigAdapter,
+  DevServerAdapter,
 } from "claude-swarm";
 ```
 
 ### Built-in adapters
 
-- `NestAdapter` - NestJS backend (`nest start --watch`)
-- `NextAdapter` - Next.js frontend (`next dev`)
-- `ViteAdapter` - Vite dev server (`vite`)
-- `NullAdapter` - No-op for projects with no managed dev server
-- `ConfigAdapter` - Generic adapter driven by JSON config
+| Adapter | Description |
+|---------|-------------|
+| `NestAdapter` | NestJS backend (`nest start --watch`) |
+| `NextAdapter` | Next.js frontend (`next dev`) |
+| `ViteAdapter` | Vite dev server (`vite`) |
+| `NullAdapter` | No-op for projects with no managed dev server |
+| `ConfigAdapter` | Generic adapter driven by `.claude-swarm.json` |
+| `DevServerAdapter` | Abstract base class; extend to build custom adapters |
 
 ### Custom adapters
 
@@ -107,23 +186,11 @@ interface AppAdapter {
   stop(): Promise<void>;
   kill(): Promise<void>;
   isRunning(): Promise<boolean>;
+  logFile(): string | null;
 }
 ```
 
-## Multi-project support
-
-claude-swarm supports managing sessions across multiple projects. The first time you start a session,
-you can add new projects interactively. Project configurations are saved to `.parallel-claude-projects.json`
-in the directory where you run `claude-swarm`.
-
-## Branch workflow
-
-By default, Claude sessions work on branches with the `claude/` prefix. The tool provides:
-
-- **Branch listing** - see all claude branches with ahead/behind status
-- **Rebase** - rebase a claude branch onto main
-- **Approve** - rebase + fast-forward merge + delete in one step
-- **Cherry-pick** - pull specific commits from a claude branch for testing
+`logFile()` should return the absolute path to the log file for this adapter, or `null` if no log is available. The path is used by the "View logs" TUI feature.
 
 ## License
 

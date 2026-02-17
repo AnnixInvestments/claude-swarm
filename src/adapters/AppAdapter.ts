@@ -4,4 +4,5 @@ export interface AppAdapter {
   stop(): Promise<void>;
   kill(): Promise<void>;
   isRunning(): Promise<boolean>;
+  logFile(): string | null;
 }

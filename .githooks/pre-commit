@@ -1,0 +1,70 @@
+#!/bin/bash
+
+set -e
+
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+SECRETS_PATTERNS_FILE="$ROOT_DIR/.secret-patterns"
+
+echo "Running secret detection scan..."
+
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACMR | grep -v -E '(pnpm-lock\.yaml|package-lock\.json|\.gitignore|\.githooks/)' || true)
+
+if [ -z "$STAGED_FILES" ]; then
+    echo "No files to scan."
+    exit 0
+fi
+
+FOUND_SECRETS=0
+
+if [ -f "$SECRETS_PATTERNS_FILE" ]; then
+    while IFS= read -r pattern || [ -n "$pattern" ]; do
+        case "$pattern" in
+            ''|\#*) continue ;;
+        esac
+
+        for file in $STAGED_FILES; do
+            if [ -f "$file" ]; then
+                if git show ":$file" 2>/dev/null | grep -qF "$pattern"; then
+                    echo "ERROR: Potential secret found in $file"
+                    echo "  Pattern: $pattern"
+                    FOUND_SECRETS=1
+                fi
+            fi
+        done
+    done < "$SECRETS_PATTERNS_FILE"
+fi
+
+COMMON_PATTERNS=(
+    'AKIA[0-9A-Z]{16}'
+    'JWT_SECRET.*[a-f0-9]{64}'
+    'BEGIN.*PRIVATE KEY'
+    'FlyV1.*fm2_'
+    'AIza[0-9A-Za-z_-]{35}'
+)
+
+for pattern in "${COMMON_PATTERNS[@]}"; do
+    for file in $STAGED_FILES; do
+        if [ -f "$file" ]; then
+            if git show ":$file" 2>/dev/null | grep -qE "$pattern"; then
+                echo "ERROR: Potential secret pattern found in $file"
+                echo "  Pattern type: $(printf '%.50s' "$pattern")..."
+                FOUND_SECRETS=1
+            fi
+        fi
+    done
+done
+
+if [ $FOUND_SECRETS -eq 1 ]; then
+    echo ""
+    echo "=========================================="
+    echo "COMMIT BLOCKED: Potential secrets detected"
+    echo "=========================================="
+    echo ""
+    echo "If these are false positives, you can:"
+    echo "  1. Add the pattern to .secret-patterns with a comment explaining why it's safe"
+    echo "  2. Use 'git commit --no-verify' to bypass (NOT RECOMMENDED)"
+    echo ""
+    exit 1
+fi
+
+echo "Secret scan passed - no secrets detected."

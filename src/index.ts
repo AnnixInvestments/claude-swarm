@@ -9,12 +9,7 @@ import { checkbox, confirm, input, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import type { AppAdapter } from "./adapters/index.js";
 import { ConfigAdapter, NullAdapter } from "./adapters/index.js";
-import {
-  loadProjectsConfig,
-  loadSwarmConfig,
-  projectsConfigFile,
-  saveProjectsConfig,
-} from "./config.js";
+import { loadProjectsConfig, loadSwarmConfig, saveProjectsConfig } from "./config.js";
 import type { ProjectConfig, ProjectsConfig } from "./config.js";
 import { log } from "./log.js";
 
@@ -65,6 +60,87 @@ interface SpawnOptions {
   task?: string;
 }
 
+enum MainAction {
+  Branches = "branches",
+  Sessions = "sessions",
+  Pull = "pull",
+  Start = "start",
+  Stop = "stop",
+  Logs = "logs",
+  Refresh = "refresh",
+  Quit = "quit",
+}
+
+enum SessionAction {
+  New = "new",
+  PullChanges = "pull-changes",
+  KillOrphaned = "kill-orphaned",
+  KillSelect = "kill-select",
+  Terminate = "terminate",
+  Back = "back",
+}
+
+enum KillMethod {
+  Graceful = "graceful",
+  Force = "force",
+  Cancel = "cancel",
+}
+
+enum BranchMenuAction {
+  Create = "create",
+  Back = "back",
+}
+
+enum BranchAction {
+  Switch = "switch",
+  Rebase = "rebase",
+  Approve = "approve",
+  Delete = "delete",
+  Back = "back",
+}
+
+enum StartType {
+  Main = "main",
+  Issue = "issue",
+  Branch = "branch",
+  Cancel = "cancel",
+}
+
+enum BranchPlacement {
+  Main = "main",
+  Create = "create",
+  Existing = "existing",
+  Cancel = "cancel",
+}
+
+enum SessionMode {
+  Interactive = "interactive",
+  Headless = "headless",
+  Cancel = "cancel",
+}
+
+enum PullChoice {
+  CherryPickAll = "cherry-pick-all",
+  CherryPickLatest = "cherry-pick-latest",
+  Cancel = "cancel",
+}
+
+enum CherryPickAbort {
+  Abort = "abort",
+  Manual = "manual",
+}
+
+enum ProjectAction {
+  AddNew = "add-new",
+  Cancel = "cancel",
+}
+
+enum Sentinel {
+  Cancel = "cancel",
+  Back = "back",
+  CreateNew = "create-new",
+}
+
 const DEFAULT_ROOT_DIR = process.cwd();
 const DEFAULT_BRANCH_PREFIX = "claude/";
 
@@ -102,16 +178,12 @@ function initProject(project: ProjectConfig): void {
   }
 }
 
-function configFileForRoot(): string {
-  return projectsConfigFile(DEFAULT_ROOT_DIR);
-}
-
 function localProjectsConfig(): ProjectsConfig {
-  return loadProjectsConfig(configFileForRoot());
+  return loadProjectsConfig();
 }
 
 function persistProjectsConfig(config: ProjectsConfig): void {
-  saveProjectsConfig(configFileForRoot(), config);
+  saveProjectsConfig(config);
 }
 
 function addProject(project: ProjectConfig): void {
@@ -134,17 +206,21 @@ async function selectProjectForSession(): Promise<ProjectConfig | null> {
       name: `${p.name} ${chalk.dim(`(${p.path})`)}`,
       value: p.path,
     })),
-    { name: chalk.green("+ Add another project"), value: "add-new" },
-    { name: chalk.dim("← Cancel"), value: "cancel" },
+    { name: chalk.green("+ Add another project"), value: ProjectAction.AddNew },
+    { name: chalk.dim("← Cancel"), value: ProjectAction.Cancel },
   ];
 
-  const selected = await selectWithEscape("Select project for this session:", choices, "cancel");
+  const selected = await selectWithEscape(
+    "Select project for this session:",
+    choices,
+    ProjectAction.Cancel,
+  );
 
-  if (selected === "cancel") {
+  if (selected === ProjectAction.Cancel) {
     return null;
   }
 
-  if (selected === "add-new") {
+  if (selected === ProjectAction.AddNew) {
     const projectPath = await input({
       message: "Enter full path to project:",
       validate: (val) => {
@@ -360,7 +436,7 @@ function detectClaudeSessions(): Session[] {
       return winResult;
     }
   } catch {
-    // session detection failed silently
+    return [];
   }
 
   return sessions;
@@ -408,59 +484,81 @@ function killMultipleProcesses(
 const terminalWidth = () => process.stdout.columns || 80;
 const boxContentWidth = () => terminalWidth() - 2;
 
+const BORDER = {
+  top: "#001899",
+  divider: "#0044bb",
+  content: "#0077cc",
+  footer: "#00ccff",
+} as const;
+
+const b = {
+  top: (s: string) => chalk.bold.hex(BORDER.top)(s),
+  divider: (s: string) => chalk.bold.hex(BORDER.divider)(s),
+  content: (s: string) => chalk.bold.hex(BORDER.content)(s),
+  footer: (s: string) => chalk.bold.hex(BORDER.footer)(s),
+};
+
+function gradient(text: string): string {
+  const stops = [
+    "#00eeff",
+    "#00ccff",
+    "#00aaff",
+    "#0088ff",
+    "#0066ff",
+    "#2244ff",
+    "#4422ff",
+    "#6600ff",
+  ];
+  return text
+    .split("")
+    .map((ch, i) => chalk.bold.hex(stops[i % stops.length])(ch))
+    .join("");
+}
+
 function printHeader(): void {
   process.stdout.write("\x1b[2J\x1b[H");
   const width = boxContentWidth();
-  log.print(chalk.bold.cyan(`┌${"─".repeat(width)}┐`));
-  const title = "  Claude Swarm";
+  const titleText = "  ⬡  C L A U D E   S W A R M";
+  const subtitle = "  parallel sessions · worktree isolation · dev server lifecycle";
+  log.print(b.top(`┌${"─".repeat(width)}┐`));
   log.print(
-    chalk.bold.cyan("│") +
-      chalk.bold(title) +
-      " ".repeat(width - title.length) +
-      chalk.bold.cyan("│"),
+    b.top("│") +
+      gradient(titleText) +
+      " ".repeat(Math.max(0, width - titleText.length)) +
+      b.top("│"),
   );
-  log.print(chalk.bold.cyan(`├${"─".repeat(width)}┤`));
+  log.print(b.top("│") + chalk.dim(subtitle.padEnd(width)) + b.top("│"));
+  log.print(b.divider(`├${"─".repeat(width)}┤`));
 }
 
 function printFooter(): void {
-  log.print(chalk.bold.cyan(`└${"─".repeat(boxContentWidth())}┘`));
+  log.print(b.footer(`└${"─".repeat(boxContentWidth())}┘`));
 }
 
 function printSection(title: string): void {
   const width = boxContentWidth();
   const text = `  ${title}`;
-  log.print(
-    chalk.bold.cyan("│") +
-      chalk.bold(text) +
-      " ".repeat(width - text.length) +
-      chalk.bold.cyan("│"),
-  );
+  log.print(b.content("│") + chalk.bold(text) + " ".repeat(width - text.length) + b.content("│"));
 }
 
 function printBoxLine(content: string, indent = 2): void {
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: ESC char needed for ANSI stripping
-  const stripAnsi = (str: string) => str.replace(/\u001b\[[0-9;]*m/g, "");
+  const stripAnsi = (str: string) =>
+    str.replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g"), "");
   const cleanContent = stripAnsi(content);
   const width = boxContentWidth();
   const maxWidth = width - indent;
 
   if (cleanContent.length > maxWidth) {
     const truncated = `${cleanContent.slice(0, maxWidth - 1)}…`;
-    log.print(chalk.bold.cyan("│") + " ".repeat(indent) + truncated + chalk.bold.cyan("│"));
+    log.print(b.content("│") + " ".repeat(indent) + truncated + b.content("│"));
   } else {
     const padding = maxWidth - cleanContent.length;
-    log.print(
-      chalk.bold.cyan("│") +
-        " ".repeat(indent) +
-        content +
-        " ".repeat(padding) +
-        chalk.bold.cyan("│"),
-    );
+    log.print(b.content("│") + " ".repeat(indent) + content + " ".repeat(padding) + b.content("│"));
   }
 }
 
 function printEmptyLine(): void {
-  log.print(chalk.bold.cyan("│") + " ".repeat(boxContentWidth()) + chalk.bold.cyan("│"));
+  log.print(b.content("│") + " ".repeat(boxContentWidth()) + b.content("│"));
 }
 
 async function switchToBranch(branch: string): Promise<void> {
@@ -650,18 +748,20 @@ async function deleteBranch(branch: string): Promise<void> {
 async function startAdapters(): Promise<void> {
   const hasRealAdapters = appAdapters.some((a) => !(a instanceof NullAdapter));
   if (!hasRealAdapters) {
-    log.warn("No app adapters configured. Add a .claude-swarm.json to configure dev servers.");
+    log.print(
+      chalk.dim("  No app adapters configured. Add a .claude-swarm.json to configure dev servers."),
+    );
     return;
   }
 
   await Promise.all(
     appAdapters.map(async (adapter) => {
-      log.info(`Starting ${adapter.name}...`);
+      log.print(`  Starting ${adapter.name}...`);
       try {
         await adapter.start();
-        log.info(`${adapter.name} started`);
+        log.print(chalk.green(`  ${adapter.name} started`));
       } catch (err) {
-        log.error(`Failed to start ${adapter.name}: ${(err as Error).message}`);
+        log.print(chalk.red(`  Failed to start ${adapter.name}: ${(err as Error).message}`));
       }
     }),
   );
@@ -670,14 +770,20 @@ async function startAdapters(): Promise<void> {
 async function stopAdapters(): Promise<void> {
   await Promise.all(
     appAdapters.map(async (adapter) => {
+      log.print(`  Stopping ${adapter.name}...`);
       try {
         await adapter.stop();
-      } catch (err) {
-        log.error(`Failed to stop ${adapter.name}: ${(err as Error).message}`);
+        log.print(chalk.dim(`  ${adapter.name} stopped`));
+      } catch {
+        try {
+          await adapter.kill();
+          log.print(chalk.dim(`  ${adapter.name} killed`));
+        } catch (err) {
+          log.print(chalk.red(`  Failed to stop ${adapter.name}: ${(err as Error).message}`));
+        }
       }
     }),
   );
-  log.info("App stopped.");
 }
 
 async function isAnyAdapterRunning(): Promise<boolean> {
@@ -696,13 +802,13 @@ async function showBranchMenu(): Promise<void> {
     const action = await select({
       message: "What would you like to do?",
       choices: [
-        { name: `Create a new ${claudeBranchPrefix}* branch`, value: "create" },
-        { name: chalk.dim("← Back"), value: "back" },
+        { name: `Create a new ${claudeBranchPrefix}* branch`, value: BranchMenuAction.Create },
+        { name: chalk.dim("← Back"), value: BranchMenuAction.Back },
       ],
       pageSize: 20,
     });
 
-    if (action === "create") {
+    if (action === BranchMenuAction.Create) {
       const branchName = await input({
         message: `Branch name (will be prefixed with ${claudeBranchPrefix}):`,
         validate: (val) => (val.trim() ? true : "Branch name required"),
@@ -721,8 +827,8 @@ async function showBranchMenu(): Promise<void> {
   }));
 
   choices.push(
-    { name: `Create new ${claudeBranchPrefix}* branch`, value: "create" },
-    { name: chalk.dim("← Back"), value: "back" },
+    { name: `Create new ${claudeBranchPrefix}* branch`, value: BranchMenuAction.Create },
+    { name: chalk.dim("← Back"), value: BranchMenuAction.Back },
   );
 
   const selected = await select({
@@ -731,9 +837,9 @@ async function showBranchMenu(): Promise<void> {
     pageSize: 20,
   });
 
-  if (selected === "back") return;
+  if (selected === BranchMenuAction.Back) return;
 
-  if (selected === "create") {
+  if (selected === BranchMenuAction.Create) {
     const branchName = await input({
       message: `Branch name (will be prefixed with ${claudeBranchPrefix}):`,
       validate: (val) => (val.trim() ? true : "Branch name required"),
@@ -752,22 +858,22 @@ async function branchActions(branch: string): Promise<void> {
   const action = await select({
     message: `Actions for ${branch}:`,
     choices: [
-      { name: "Switch to this branch", value: "switch" },
-      { name: "Rebase onto main", value: "rebase" },
-      { name: "Approve (rebase + merge + delete)", value: "approve" },
-      { name: "Delete branch", value: "delete" },
-      { name: chalk.dim("← Back"), value: "back" },
+      { name: "Switch to this branch", value: BranchAction.Switch },
+      { name: "Rebase onto main", value: BranchAction.Rebase },
+      { name: "Approve (rebase + merge + delete)", value: BranchAction.Approve },
+      { name: "Delete branch", value: BranchAction.Delete },
+      { name: chalk.dim("← Back"), value: BranchAction.Back },
     ],
     pageSize: 20,
   });
 
-  if (action === "switch") {
+  if (action === BranchAction.Switch) {
     await switchToBranch(branch);
-  } else if (action === "rebase") {
+  } else if (action === BranchAction.Rebase) {
     await rebaseBranch(branch);
-  } else if (action === "approve") {
+  } else if (action === BranchAction.Approve) {
     await approveBranch(branch);
-  } else if (action === "delete") {
+  } else if (action === BranchAction.Delete) {
     await deleteBranch(branch);
   }
 }
@@ -1070,14 +1176,14 @@ async function pullChangesFromBranch(branch: string): Promise<void> {
   const pullChoice = await selectWithEscape(
     "What would you like to do?",
     [
-      { name: "Cherry-pick all commits to main (for testing)", value: "cherry-pick-all" },
-      { name: "Cherry-pick latest commit only", value: "cherry-pick-latest" },
-      { name: chalk.dim("← Cancel"), value: "cancel" },
+      { name: "Cherry-pick all commits to main (for testing)", value: PullChoice.CherryPickAll },
+      { name: "Cherry-pick latest commit only", value: PullChoice.CherryPickLatest },
+      { name: chalk.dim("← Cancel"), value: PullChoice.Cancel },
     ],
-    "cancel",
+    PullChoice.Cancel,
   );
 
-  if (pullChoice === "cancel") return;
+  if (pullChoice === PullChoice.Cancel) return;
 
   const latestCommit = commits[0].split(" ")[0];
   const oldestCommit = commits[commits.length - 1].split(" ")[0];
@@ -1092,19 +1198,17 @@ async function pullChangesFromBranch(branch: string): Promise<void> {
       const abortChoice = await selectWithEscape(
         "What would you like to do?",
         [
-          { name: "Abort and return to menu", value: "abort" },
-          { name: "Leave as-is for manual resolution", value: "manual" },
+          { name: "Abort and return to menu", value: CherryPickAbort.Abort },
+          { name: "Leave as-is for manual resolution", value: CherryPickAbort.Manual },
         ],
-        "abort",
+        CherryPickAbort.Abort,
       );
 
-      if (abortChoice === "abort") {
+      if (abortChoice === CherryPickAbort.Abort) {
         try {
           execSync("git cherry-pick --abort", { cwd: rootDir(), stdio: "pipe" });
           log.info("Cherry-pick aborted.");
-        } catch {
-          // already aborted
-        }
+        } catch {}
       } else {
         log.info('Resolve conflicts manually, then run "git cherry-pick --continue".');
       }
@@ -1113,7 +1217,7 @@ async function pullChangesFromBranch(branch: string): Promise<void> {
   };
 
   let success = false;
-  if (pullChoice === "cherry-pick-all") {
+  if (pullChoice === PullChoice.CherryPickAll) {
     const commitRange = commits.length === 1 ? latestCommit : `${oldestCommit}^..${latestCommit}`;
     success = await cherryPickWithRetry(commitRange);
     if (success) {
@@ -1204,45 +1308,45 @@ async function showSessionsMenu(): Promise<void> {
     const existingBranches = claudeBranches();
     const branchesWithCommits = existingBranches.filter((b) => b.ahead > 0);
 
-    const choices = [{ name: "Start new session", value: "new" }];
+    const choices = [{ name: "Start new session", value: SessionAction.New }];
 
     if (branchesWithCommits.length > 0) {
-      choices.push({ name: "Pull changes for testing", value: "pull-changes" });
+      choices.push({ name: "Pull changes for testing", value: SessionAction.PullChanges });
     }
 
     if (orphanedSessions.length > 0) {
       choices.push({
         name: `Kill all orphaned sessions (${orphanedSessions.length})`,
-        value: "kill-orphaned",
+        value: SessionAction.KillOrphaned,
       });
     }
 
     if (detectedSessions.length > 0) {
-      choices.push({ name: "Select sessions to kill", value: "kill-select" });
+      choices.push({ name: "Select sessions to kill", value: SessionAction.KillSelect });
     }
 
     if (managed.length > 0) {
-      choices.push({ name: "Terminate a managed session", value: "terminate" });
+      choices.push({ name: "Terminate a managed session", value: SessionAction.Terminate });
     }
 
-    choices.push({ name: chalk.dim("← Back"), value: "back" });
+    choices.push({ name: chalk.dim("← Back"), value: SessionAction.Back });
 
-    const action = await selectWithEscape("Session actions:", choices, "back");
+    const action = await selectWithEscape("Session actions:", choices, SessionAction.Back);
 
-    if (action === "back") return;
+    if (action === SessionAction.Back) return;
 
-    if (action === "kill-orphaned") {
+    if (action === SessionAction.KillOrphaned) {
       const killMethod = await selectWithEscape(
         "How to kill orphaned sessions?",
         [
-          { name: "Graceful (SIGTERM) - allows cleanup", value: "graceful" },
-          { name: "Force (SIGKILL) - immediate termination", value: "force" },
-          { name: chalk.dim("← Cancel"), value: "cancel" },
+          { name: "Graceful (SIGTERM) - allows cleanup", value: KillMethod.Graceful },
+          { name: "Force (SIGKILL) - immediate termination", value: KillMethod.Force },
+          { name: chalk.dim("← Cancel"), value: KillMethod.Cancel },
         ],
-        "cancel",
+        KillMethod.Cancel,
       );
 
-      if (killMethod === "cancel") continue;
+      if (killMethod === KillMethod.Cancel) continue;
 
       const confirmed = await confirm({
         message: `Kill ${orphanedSessions.length} orphaned session(s)? This cannot be undone.`,
@@ -1251,7 +1355,7 @@ async function showSessionsMenu(): Promise<void> {
 
       if (confirmed) {
         const pids = orphanedSessions.map((s) => s.pid);
-        const force = killMethod === "force";
+        const force = killMethod === KillMethod.Force;
         const result = killMultipleProcesses(pids, force);
         if (result.killed.length > 0) {
           log.info(`Killed ${result.killed.length} orphaned session(s).`);
@@ -1268,7 +1372,7 @@ async function showSessionsMenu(): Promise<void> {
       continue;
     }
 
-    if (action === "kill-select") {
+    if (action === SessionAction.KillSelect) {
       const allSessions = [...attachedSessions, ...orphanedSessions];
       const sessionChoices = allSessions.map((s) => {
         const projectDisplay = s.project !== "unknown" ? s.project : "unknown project";
@@ -1300,14 +1404,14 @@ async function showSessionsMenu(): Promise<void> {
       const killMethod = await selectWithEscape(
         "How to kill selected sessions?",
         [
-          { name: "Graceful (SIGTERM) - allows cleanup", value: "graceful" },
-          { name: "Force (SIGKILL) - immediate termination", value: "force" },
-          { name: chalk.dim("← Cancel"), value: "cancel" },
+          { name: "Graceful (SIGTERM) - allows cleanup", value: KillMethod.Graceful },
+          { name: "Force (SIGKILL) - immediate termination", value: KillMethod.Force },
+          { name: chalk.dim("← Cancel"), value: KillMethod.Cancel },
         ],
-        "cancel",
+        KillMethod.Cancel,
       );
 
-      if (killMethod === "cancel") continue;
+      if (killMethod === KillMethod.Cancel) continue;
 
       const confirmed = await confirm({
         message: `Kill ${selectedPids.length} selected session(s)? This cannot be undone.`,
@@ -1315,7 +1419,7 @@ async function showSessionsMenu(): Promise<void> {
       });
 
       if (confirmed) {
-        const force = killMethod === "force";
+        const force = killMethod === KillMethod.Force;
         const result = killMultipleProcesses(selectedPids, force);
         if (result.killed.length > 0) {
           log.info(`Killed ${result.killed.length} session(s).`);
@@ -1332,26 +1436,26 @@ async function showSessionsMenu(): Promise<void> {
       continue;
     }
 
-    if (action === "pull-changes") {
+    if (action === SessionAction.PullChanges) {
       const branchChoices = branchesWithCommits.map((b) => ({
         name: `${b.name} (${b.ahead} commit${b.ahead > 1 ? "s" : ""} ahead)`,
         value: b.name,
       }));
-      branchChoices.push({ name: chalk.dim("← Cancel"), value: "cancel" });
+      branchChoices.push({ name: chalk.dim("← Cancel"), value: Sentinel.Cancel });
 
       const selectedBranch = await selectWithEscape(
         "Pull changes from which branch?",
         branchChoices,
-        "cancel",
+        Sentinel.Cancel,
       );
 
-      if (selectedBranch !== "cancel") {
+      if (selectedBranch !== Sentinel.Cancel) {
         await pullChangesFromBranch(selectedBranch);
       }
       continue;
     }
 
-    if (action === "new") {
+    if (action === SessionAction.New) {
       const selectedProject = await selectProjectForSession();
       if (!selectedProject) continue;
 
@@ -1361,21 +1465,21 @@ async function showSessionsMenu(): Promise<void> {
       const startType = await selectWithEscape(
         "How would you like to start?",
         [
-          { name: "Quick start on main (Recommended)", value: "main" },
-          { name: "Start with GitHub issue", value: "issue" },
-          { name: "Start on specific branch", value: "branch" },
-          { name: chalk.dim("← Cancel"), value: "cancel" },
+          { name: "Quick start on main (Recommended)", value: StartType.Main },
+          { name: "Start with GitHub issue", value: StartType.Issue },
+          { name: "Start on specific branch", value: StartType.Branch },
+          { name: chalk.dim("← Cancel"), value: StartType.Cancel },
         ],
-        "cancel",
+        StartType.Cancel,
       );
 
-      if (startType === "cancel") continue;
+      if (startType === StartType.Cancel) continue;
 
       let selectedBranch: string | undefined;
       let task: string | undefined;
       let createNewBranch = false;
 
-      if (startType === "issue") {
+      if (startType === StartType.Issue) {
         log.info("\nFetching open GitHub issues...");
         const issuesJson = exec("gh issue list --state open --json number,title", {
           silent: true,
@@ -1401,12 +1505,16 @@ async function showSessionsMenu(): Promise<void> {
 
         const issueChoices = [
           ...issues.map((i) => ({ name: `#${i.number} ${i.title}`, value: String(i.number) })),
-          { name: chalk.dim("← Cancel"), value: "cancel" },
+          { name: chalk.dim("← Cancel"), value: Sentinel.Cancel },
         ];
 
-        const selectedIssue = await selectWithEscape("Select an issue:", issueChoices, "cancel");
+        const selectedIssue = await selectWithEscape(
+          "Select an issue:",
+          issueChoices,
+          Sentinel.Cancel,
+        );
 
-        if (selectedIssue === "cancel") continue;
+        if (selectedIssue === Sentinel.Cancel) continue;
 
         const issueJson = exec(`gh issue view ${selectedIssue} --json title,body`, {
           silent: true,
@@ -1423,25 +1531,31 @@ async function showSessionsMenu(): Promise<void> {
 
         const existingBranches = claudeBranches();
         const branchChoiceOptions = [
-          { name: "Main directory (no isolation)", value: "main" },
-          { name: "New worktree (isolated directory with new branch)", value: "create" },
+          { name: "Main directory (no isolation)", value: BranchPlacement.Main },
+          {
+            name: "New worktree (isolated directory with new branch)",
+            value: BranchPlacement.Create,
+          },
         ];
 
         if (existingBranches.length > 0) {
-          branchChoiceOptions.push({ name: "Existing worktree/branch", value: "existing" });
+          branchChoiceOptions.push({
+            name: "Existing worktree/branch",
+            value: BranchPlacement.Existing,
+          });
         }
 
-        branchChoiceOptions.push({ name: chalk.dim("← Cancel"), value: "cancel" });
+        branchChoiceOptions.push({ name: chalk.dim("← Cancel"), value: BranchPlacement.Cancel });
 
         const branchChoice = await selectWithEscape(
           "Where should this session work?",
           branchChoiceOptions,
-          "cancel",
+          BranchPlacement.Cancel,
         );
 
-        if (branchChoice === "cancel") continue;
+        if (branchChoice === BranchPlacement.Cancel) continue;
 
-        if (branchChoice === "create") {
+        if (branchChoice === BranchPlacement.Create) {
           const issueData = JSON.parse(issueJson ?? "{}");
           const suggestedName = (issueData.title ?? `issue-${selectedIssue}`)
             .toLowerCase()
@@ -1457,44 +1571,44 @@ async function showSessionsMenu(): Promise<void> {
 
           selectedBranch = `${claudeBranchPrefix}${branchName.trim()}`;
           createNewBranch = true;
-        } else if (branchChoice === "existing") {
+        } else if (branchChoice === BranchPlacement.Existing) {
           const existingBranchChoices = [
             ...existingBranches.map((b) => ({ name: b.name, value: b.name })),
-            { name: chalk.dim("← Cancel"), value: "cancel" },
+            { name: chalk.dim("← Cancel"), value: Sentinel.Cancel },
           ];
 
           selectedBranch = await selectWithEscape(
             "Select existing branch:",
             existingBranchChoices,
-            "cancel",
+            Sentinel.Cancel,
           );
 
-          if (selectedBranch === "cancel") continue;
+          if (selectedBranch === Sentinel.Cancel) continue;
         } else {
           selectedBranch = "main";
         }
-      } else if (startType === "branch") {
+      } else if (startType === StartType.Branch) {
         const branches = claudeBranches();
         const allBranchesList = allBranches();
 
         const branchChoices = [
-          { name: "Create new worktree with new branch", value: "create-new" },
+          { name: "Create new worktree with new branch", value: Sentinel.CreateNew },
           ...branches.map((b) => ({ name: `${b.name} (claude branch)`, value: b.name })),
           ...allBranchesList
             .filter((b) => !b.startsWith(claudeBranchPrefix) && b !== "main")
             .map((b) => ({ name: b, value: b })),
-          { name: chalk.dim("← Cancel"), value: "cancel" },
+          { name: chalk.dim("← Cancel"), value: StartType.Cancel },
         ];
 
         selectedBranch = await selectWithEscape(
           "Select branch (will use/create worktree):",
           branchChoices,
-          "cancel",
+          StartType.Cancel,
         );
 
-        if (selectedBranch === "cancel") continue;
+        if (selectedBranch === StartType.Cancel) continue;
 
-        if (selectedBranch === "create-new") {
+        if (selectedBranch === Sentinel.CreateNew) {
           const branchName = await input({
             message: `Branch name (will be prefixed with ${claudeBranchPrefix}):`,
             validate: (val) => (val.trim() ? true : "Branch name required"),
@@ -1516,16 +1630,19 @@ async function showSessionsMenu(): Promise<void> {
       const mode = await selectWithEscape(
         "Session mode:",
         [
-          { name: "Interactive - prompts for confirmation (Recommended)", value: "interactive" },
-          { name: "Headless - auto-accepts all actions", value: "headless" },
-          { name: chalk.dim("← Cancel"), value: "cancel" },
+          {
+            name: "Interactive - prompts for confirmation (Recommended)",
+            value: SessionMode.Interactive,
+          },
+          { name: "Headless - auto-accepts all actions", value: SessionMode.Headless },
+          { name: chalk.dim("← Cancel"), value: SessionMode.Cancel },
         ],
-        "cancel",
+        SessionMode.Cancel,
       );
 
-      if (mode === "cancel") continue;
+      if (mode === SessionMode.Cancel) continue;
 
-      const headless = mode === "headless";
+      const headless = mode === SessionMode.Headless;
 
       if (headless && !task) {
         task = await input({
@@ -1540,20 +1657,20 @@ async function showSessionsMenu(): Promise<void> {
         headless,
         task,
       });
-    } else if (action === "terminate") {
+    } else if (action === SessionAction.Terminate) {
       const sessionChoices = Array.from(managedSessions.values()).map((s) => ({
         name: `${s.name} on ${s.branch}`,
         value: s.id,
       }));
-      sessionChoices.push({ name: chalk.dim("← Cancel"), value: "cancel" });
+      sessionChoices.push({ name: chalk.dim("← Cancel"), value: SessionAction.Back });
 
       const selectedSession = await selectWithEscape(
         "Select session to terminate:",
         sessionChoices,
-        "cancel",
+        SessionAction.Back,
       );
 
-      if (selectedSession !== "cancel") {
+      if (selectedSession !== SessionAction.Back) {
         await terminateSession(selectedSession);
       }
     }
@@ -1691,18 +1808,25 @@ async function selectWithShortcuts(message: string, choices: MenuChoice[]): Prom
         return;
       }
 
+      const clearMenu = () => {
+        const lines = choices.length + 1;
+        process.stdout.write(`\x1b[${lines}A\x1b[0J`);
+      };
+
       if (key.name === "return") {
         cleanup();
-        log.print("");
+        clearMenu();
         resolve(choices[selectedIndex].value);
         return;
       }
 
       if (key.name === "escape") {
         cleanup();
-        log.print("");
-        const backChoice = choices.find((c) => c.value === "back" || c.value === "quit");
-        resolve(backChoice?.value ?? "back");
+        clearMenu();
+        const backChoice = choices.find(
+          (c) => c.value === Sentinel.Back || c.value === MainAction.Quit,
+        );
+        resolve(backChoice?.value ?? Sentinel.Back);
         return;
       }
 
@@ -1715,7 +1839,7 @@ async function selectWithShortcuts(message: string, choices: MenuChoice[]): Prom
       const matchIndex = keyMap.get(pressed);
       if (matchIndex !== undefined) {
         cleanup();
-        log.print("");
+        clearMenu();
         resolve(choices[matchIndex].value);
         return;
       }
@@ -1723,6 +1847,74 @@ async function selectWithShortcuts(message: string, choices: MenuChoice[]): Prom
 
     process.stdin.on("keypress", handler);
   });
+}
+
+async function showAppLogs(): Promise<void> {
+  const loggableAdapters = appAdapters.filter((a) => a.logFile() !== null);
+
+  if (loggableAdapters.length === 0) {
+    printBoxLine(chalk.dim("No log files available. Start apps first."));
+    await new Promise<void>((resolve) => setTimeout(resolve, 1500));
+    return;
+  }
+
+  let adapter = loggableAdapters[0];
+
+  if (loggableAdapters.length > 1) {
+    const choices = [
+      ...loggableAdapters.map((a) => ({ name: a.name, value: a.name })),
+      { name: chalk.dim("← Cancel"), value: Sentinel.Cancel },
+    ];
+    const selected = await selectWithEscape("View logs for:", choices, Sentinel.Cancel);
+    if (selected === Sentinel.Cancel) return;
+    adapter = loggableAdapters.find((a) => a.name === selected) ?? loggableAdapters[0];
+  }
+
+  const logPath = adapter.logFile();
+  if (!logPath || !existsSync(logPath)) {
+    printBoxLine(chalk.dim(`No log file found for ${adapter.name}. Has it been started?`));
+    await new Promise<void>((resolve) => setTimeout(resolve, 1500));
+    return;
+  }
+
+  process.stdout.write("\x1b[2J\x1b[H");
+  log.print(b.divider(`── ${adapter.name} logs ──`) + chalk.dim(" (q or Escape to return)"));
+  log.print(chalk.dim(`   ${logPath}`));
+  log.print("");
+
+  const tail =
+    process.platform === "win32"
+      ? spawn("powershell", ["-Command", `Get-Content -Path '${logPath}' -Wait`], {
+          stdio: ["ignore", "pipe", "pipe"],
+        })
+      : spawn("tail", ["-f", logPath], { stdio: ["ignore", "pipe", "pipe"] });
+  tail.stdout?.pipe(process.stdout);
+  tail.stderr?.pipe(process.stderr);
+
+  const stopTail = () => tail.kill("SIGTERM");
+
+  if (process.stdin.isTTY) {
+    process.stdin.resume();
+    emitKeypressEvents(process.stdin);
+    process.stdin.setRawMode(true);
+    process.stdin.on("keypress", (_str, key) => {
+      if (!key) return;
+      if (key.name === "q" || key.name === "escape" || (key.ctrl && key.name === "c")) {
+        stopTail();
+      }
+    });
+  }
+
+  await new Promise<void>((resolve) => {
+    tail.on("close", () => resolve());
+  });
+
+  if (process.stdin.isTTY) {
+    process.stdin.setRawMode(false);
+  }
+  process.stdin.removeAllListeners("keypress");
+
+  log.print("");
 }
 
 async function mainMenu(): Promise<void> {
@@ -1766,53 +1958,67 @@ async function mainMenu(): Promise<void> {
     const choices: MenuChoice[] = [
       {
         name: `${padLabel("Manage branches", 28)}${chalk.cyan("[b]")}`,
-        value: "branches",
+        value: MainAction.Branches,
         key: "b",
       },
       {
         name: `${padLabel(`Manage sessions${sessionInfo}`, 28)}${chalk.cyan("[s]")}`,
-        value: "sessions",
+        value: MainAction.Sessions,
         key: "s",
       },
-      { name: `${padLabel("Pull changes", 28)}${chalk.cyan("[p]")}`, value: "pull", key: "p" },
+      {
+        name: `${padLabel("Pull changes", 28)}${chalk.cyan("[p]")}`,
+        value: MainAction.Pull,
+        key: "p",
+      },
     ];
 
     if (hasRealAdapters) {
       choices.push({
         name: `${padLabel("Start apps", 28)}${chalk.cyan("[a]")}`,
-        value: "start",
+        value: MainAction.Start,
         key: "a",
       });
       choices.push({
         name: `${padLabel("Stop apps", 28)}${chalk.cyan("[x]")}`,
-        value: "stop",
+        value: MainAction.Stop,
         key: "x",
+      });
+      choices.push({
+        name: `${padLabel("View logs", 28)}${chalk.cyan("[l]")}`,
+        value: MainAction.Logs,
+        key: "l",
       });
     }
 
     choices.push({
       name: `${padLabel("Refresh", 28)}${chalk.cyan("[r]")}`,
-      value: "refresh",
+      value: MainAction.Refresh,
       key: "r",
     });
 
-    choices.push({ name: chalk.dim(`${padLabel("Quit", 28)}[q]`), value: "quit", key: "q" });
+    choices.push({
+      name: chalk.dim(`${padLabel("Quit", 28)}[q]`),
+      value: MainAction.Quit,
+      key: "q",
+    });
 
     const action = await selectWithShortcuts("What would you like to do?", choices);
 
-    if (action === "branches") {
+    if (action === MainAction.Branches) {
       await showBranchMenu();
-    } else if (action === "sessions") {
+    } else if (action === MainAction.Sessions) {
       await showSessionsMenu();
-    } else if (action === "pull") {
+    } else if (action === MainAction.Pull) {
       await pullChanges();
-    } else if (action === "start") {
+    } else if (action === MainAction.Start) {
       await startAdapters();
-    } else if (action === "stop") {
+    } else if (action === MainAction.Stop) {
       await stopAdapters();
-    } else if (action === "refresh") {
-      // loop continues, re-renders status
-    } else if (action === "quit") {
+    } else if (action === MainAction.Logs) {
+      await showAppLogs();
+    } else if (action === MainAction.Refresh) {
+    } else if (action === MainAction.Quit) {
       const anyRunning = await isAnyAdapterRunning();
       if (anyRunning) {
         const confirmQuit = await confirm({
@@ -1830,11 +2036,11 @@ async function mainMenu(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  log.info("\n  Claude Swarm\n");
+  log.info("\n  ⬡ Claude Swarm\n");
 
   const isGitRepo = existsSync(join(DEFAULT_ROOT_DIR, ".git"));
   if (!isGitRepo) {
-    const config = loadProjectsConfig(projectsConfigFile(DEFAULT_ROOT_DIR));
+    const config = loadProjectsConfig();
     if (config.projects.length === 0) {
       log.error("Error: Not a git repository and no projects configured.");
       process.exit(1);

@@ -1,4 +1,6 @@
 import { execSync, spawn } from "node:child_process";
+import { createWriteStream } from "node:fs";
+import { join } from "node:path";
 import type { AppAdapter } from "./AppAdapter.js";
 
 export interface AppAdapterConfig {
@@ -20,35 +22,69 @@ export class ConfigAdapter implements AppAdapter {
     this.cwd = cwd;
   }
 
+  logFile(): string {
+    return join(this.cwd, `.claude-swarm-${this.name}.log`);
+  }
+
   async start(): Promise<void> {
-    const proc = spawn(this.config.start, [], {
-      cwd: this.cwd,
-      stdio: "ignore",
-      detached: true,
-      shell: true,
-    });
-    proc.unref();
+    const logPath = this.logFile();
+    const logStream = createWriteStream(logPath, { flags: "a" });
 
     if (!this.config.readyPattern) {
+      const proc = spawn(this.config.start, [], {
+        cwd: this.cwd,
+        stdio: ["ignore", "pipe", "pipe"],
+        detached: true,
+        shell: true,
+      });
+      proc.stdout?.pipe(logStream);
+      proc.stderr?.pipe(logStream);
+      proc.unref();
       return;
     }
 
     const pattern = new RegExp(this.config.readyPattern);
     const timeoutMs = 120000;
-    const pollIntervalMs = 2000;
-    const startTime = Date.now();
 
-    while (Date.now() - startTime < timeoutMs) {
-      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-      if (await this.isRunning()) {
-        return;
-      }
-      if (pattern) {
-        return;
-      }
-    }
+    await new Promise<void>((resolve, reject) => {
+      const proc = spawn(this.config.start, [], {
+        cwd: this.cwd,
+        stdio: ["ignore", "pipe", "pipe"],
+        detached: true,
+        shell: true,
+      });
 
-    throw new Error(`${this.name} did not start within ${timeoutMs}ms`);
+      proc.stdout?.pipe(logStream, { end: false });
+      proc.stderr?.pipe(logStream, { end: false });
+
+      let settled = false;
+      const finish = (err?: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        proc.unref();
+        if (err) {
+          reject(err);
+        } else {
+          resolve();
+        }
+      };
+
+      const checkOutput = (data: Buffer) => {
+        if (pattern.test(data.toString())) {
+          finish();
+        }
+      };
+
+      proc.stdout?.on("data", checkOutput);
+      proc.stderr?.on("data", checkOutput);
+      proc.on("error", (err) => finish(err));
+
+      const timer = setTimeout(
+        () => finish(new Error(`${this.name} did not start within ${timeoutMs}ms`)),
+        timeoutMs,
+      );
+    });
   }
 
   async stop(): Promise<void> {
@@ -58,9 +94,7 @@ export class ConfigAdapter implements AppAdapter {
     } else {
       try {
         execSync(this.config.stop, { cwd: this.cwd, stdio: "pipe" });
-      } catch {
-        // stop command may exit non-zero
-      }
+      } catch {}
     }
   }
 
@@ -71,9 +105,7 @@ export class ConfigAdapter implements AppAdapter {
     } else {
       try {
         execSync(this.config.kill, { cwd: this.cwd, stdio: "pipe" });
-      } catch {
-        // kill command may exit non-zero
-      }
+      } catch {}
     }
   }
 
@@ -92,8 +124,6 @@ export class ConfigAdapter implements AppAdapter {
   private sendSignalToChildren(signal: NodeJS.Signals): void {
     try {
       execSync(`pkill -${signal} -f "${this.config.start}" 2>/dev/null`, { stdio: "pipe" });
-    } catch {
-      // no matching processes
-    }
+    } catch {}
   }
 }

@@ -2,14 +2,7 @@
   "name": "claude-swarm",
   "version": "0.1.0",
   "description": "Manage multiple parallel Claude CLI sessions with worktree isolation and dev server lifecycle management",
-  "keywords": [
-    "claude",
-    "claude-code",
-    "cli",
-    "worktree",
-    "parallel",
-    "development"
-  ],
+  "keywords": ["claude", "claude-code", "cli", "worktree", "parallel", "development"],
   "homepage": "https://github.com/AnnixInvestments/claude-swarm",
   "repository": {
     "type": "git",

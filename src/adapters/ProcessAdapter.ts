@@ -80,4 +80,8 @@ export class ProcessAdapter implements AppAdapter {
       return false;
     }
   }
+
+  logFile(): string | null {
+    return null;
+  }
 }

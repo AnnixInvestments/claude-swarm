@@ -12,4 +12,8 @@ export class NullAdapter implements AppAdapter {
   async isRunning(): Promise<boolean> {
     return false;
   }
+
+  logFile(): string | null {
+    return null;
+  }
 }
