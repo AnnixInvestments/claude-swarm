@@ -494,23 +494,6 @@ const b = {
   footer: (s: string) => chalk.bold.hex(BORDER_COLOR)(s),
 };
 
-function gradient(text: string): string {
-  const stops = [
-    "#00eeff",
-    "#00ccff",
-    "#00aaff",
-    "#0088ff",
-    "#0066ff",
-    "#2244ff",
-    "#4422ff",
-    "#6600ff",
-  ];
-  return text
-    .split("")
-    .map((ch, i) => chalk.bold.hex(stops[i % stops.length])(ch))
-    .join("");
-}
-
 function printHeader(): void {
   process.stdout.write("\x1b[2J\x1b[H");
   const width = boxContentWidth();
@@ -519,7 +502,7 @@ function printHeader(): void {
   log.print(b.top(`┌${"─".repeat(width)}┐`));
   log.print(
     b.top("│") +
-      gradient(titleText) +
+      b.top(titleText) +
       " ".repeat(Math.max(0, width - titleText.length)) +
       b.top("│"),
   );
