@@ -1763,6 +1763,15 @@ function renderMenu(message: string, choices: MenuChoice[], selectedIndex: numbe
 }
 
 async function selectWithShortcuts(message: string, choices: MenuChoice[]): Promise<string> {
+  if (!process.stdin.isTTY || typeof process.stdin.setRawMode !== "function") {
+    const result = await select({
+      message,
+      choices: choices.map((c) => ({ name: c.name, value: c.value })),
+      pageSize: 20,
+    });
+    return result;
+  }
+
   return new Promise((resolve) => {
     let selectedIndex = 0;
     const keyMap = new Map(choices.map((c, i) => [c.key.toLowerCase(), i]));
@@ -1778,14 +1787,16 @@ async function selectWithShortcuts(message: string, choices: MenuChoice[]): Prom
       log.print(`${prefix}${text}`);
     }
 
-    if (!process.stdin.isTTY) {
-      resolve(choices[0].value);
-      return;
-    }
-
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     emitKeypressEvents(process.stdin, rl);
-    process.stdin.setRawMode(true);
+
+    try {
+      process.stdin.setRawMode(true);
+    } catch {
+      rl.close();
+      resolve(choices[selectedIndex].value);
+      return;
+    }
 
     const cleanup = () => {
       process.stdin.setRawMode(false);
