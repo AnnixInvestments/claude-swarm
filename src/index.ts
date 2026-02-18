@@ -746,16 +746,26 @@ async function startAdapters(): Promise<void> {
   );
 }
 
+async function waitForStopped(adapter: AppAdapter, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!(await adapter.isRunning())) return;
+    await new Promise<void>((r) => setTimeout(r, 200));
+  }
+}
+
 async function stopAdapters(): Promise<void> {
   await Promise.all(
     appAdapters.map(async (adapter) => {
       log.print(`  Stopping ${adapter.name}...`);
       try {
         await adapter.stop();
+        await waitForStopped(adapter);
         log.print(chalk.dim(`  ${adapter.name} stopped`));
       } catch {
         try {
           await adapter.kill();
+          await waitForStopped(adapter);
           log.print(chalk.dim(`  ${adapter.name} killed`));
         } catch (err) {
           log.print(chalk.red(`  Failed to stop ${adapter.name}: ${(err as Error).message}`));
