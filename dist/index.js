@@ -45,6 +45,7 @@ var BranchAction;
     BranchAction["Switch"] = "switch";
     BranchAction["Rebase"] = "rebase";
     BranchAction["Approve"] = "approve";
+    BranchAction["Compare"] = "compare";
     BranchAction["Delete"] = "delete";
     BranchAction["Back"] = "back";
 })(BranchAction || (BranchAction = {}));
@@ -377,17 +378,12 @@ function killMultipleProcesses(pids, force = false) {
 }
 const terminalWidth = () => process.stdout.columns || 80;
 const boxContentWidth = () => terminalWidth() - 2;
-const BORDER = {
-    top: "#001899",
-    divider: "#0044bb",
-    content: "#0077cc",
-    footer: "#00ccff",
-};
+const BORDER_COLOR = "#0077cc";
 const b = {
-    top: (s) => chalk.bold.hex(BORDER.top)(s),
-    divider: (s) => chalk.bold.hex(BORDER.divider)(s),
-    content: (s) => chalk.bold.hex(BORDER.content)(s),
-    footer: (s) => chalk.bold.hex(BORDER.footer)(s),
+    top: (s) => chalk.bold.hex(BORDER_COLOR)(s),
+    divider: (s) => chalk.bold.hex(BORDER_COLOR)(s),
+    content: (s) => chalk.bold.hex(BORDER_COLOR)(s),
+    footer: (s) => chalk.bold.hex(BORDER_COLOR)(s),
 };
 function gradient(text) {
     const stops = [
@@ -692,6 +688,33 @@ async function showBranchMenu() {
     }
     await branchActions(selected);
 }
+async function compareWithMain(branch) {
+    log.info(`\nComparing ${branch} with main...`);
+    const commitsAheadStr = exec(`git rev-list --count main..${branch}`, { silent: true });
+    const ahead = Number.parseInt(commitsAheadStr, 10) || 0;
+    if (ahead === 0) {
+        log.info(`✓ ${branch} has no unique commits — it is already fully in main.`);
+        const shouldDelete = await confirm({
+            message: "Delete this branch since it's already in main?",
+            default: true,
+        });
+        if (shouldDelete) {
+            await deleteBranch(branch);
+        }
+    }
+    else {
+        log.warn(`${branch} has ${ahead} commit(s) not yet in main:\n`);
+        const commits = exec(`git log --oneline main..${branch}`, { silent: true });
+        if (commits) {
+            log.print(commits);
+        }
+        const diffStat = exec(`git diff --stat main...${branch}`, { silent: true });
+        if (diffStat) {
+            log.print(`\n${diffStat}`);
+        }
+        await confirm({ message: "\nPress Enter to continue...", default: true });
+    }
+}
 async function branchActions(branch) {
     const action = await select({
         message: `Actions for ${branch}:`,
@@ -699,6 +722,7 @@ async function branchActions(branch) {
             { name: "Switch to this branch", value: BranchAction.Switch },
             { name: "Rebase onto main", value: BranchAction.Rebase },
             { name: "Approve (rebase + merge + delete)", value: BranchAction.Approve },
+            { name: "Compare with main", value: BranchAction.Compare },
             { name: "Delete branch", value: BranchAction.Delete },
             { name: chalk.dim("← Back"), value: BranchAction.Back },
         ],
@@ -712,6 +736,9 @@ async function branchActions(branch) {
     }
     else if (action === BranchAction.Approve) {
         await approveBranch(branch);
+    }
+    else if (action === BranchAction.Compare) {
+        await compareWithMain(branch);
     }
     else if (action === BranchAction.Delete) {
         await deleteBranch(branch);
