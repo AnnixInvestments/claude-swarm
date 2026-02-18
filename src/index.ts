@@ -50,7 +50,7 @@ interface ManagedSession {
 interface MenuChoice {
   name: string;
   value: string;
-  key: string;
+  key?: string;
 }
 
 interface SpawnOptions {
@@ -795,14 +795,14 @@ async function showBranchMenu(): Promise<void> {
     log.warn(`\nNo ${claudeBranchPrefix}* branches found.`);
     log.info("Claude branches are used for parallel development work.\n");
 
-    const action = await select({
-      message: "What would you like to do?",
-      choices: [
+    const action = await selectWithEscape(
+      "What would you like to do?",
+      [
         { name: `Create a new ${claudeBranchPrefix}* branch`, value: BranchMenuAction.Create },
         { name: chalk.dim("← Back"), value: BranchMenuAction.Back },
       ],
-      pageSize: 20,
-    });
+      BranchMenuAction.Back,
+    );
 
     if (action === BranchMenuAction.Create) {
       const branchName = await input({
@@ -827,11 +827,7 @@ async function showBranchMenu(): Promise<void> {
     { name: chalk.dim("← Back"), value: BranchMenuAction.Back },
   );
 
-  const selected = await select({
-    message: "Select a branch:",
-    choices,
-    pageSize: 20,
-  });
+  const selected = await selectWithEscape("Select a branch:", choices, BranchMenuAction.Back);
 
   if (selected === BranchMenuAction.Back) return;
 
@@ -885,9 +881,9 @@ async function compareWithMain(branch: string): Promise<void> {
 }
 
 async function branchActions(branch: string): Promise<void> {
-  const action = await select({
-    message: `Actions for ${branch}:`,
-    choices: [
+  const action = await selectWithEscape(
+    `Actions for ${branch}:`,
+    [
       { name: "Switch to this branch", value: BranchAction.Switch },
       { name: "Rebase onto main", value: BranchAction.Rebase },
       { name: "Approve (rebase + merge + delete)", value: BranchAction.Approve },
@@ -895,8 +891,8 @@ async function branchActions(branch: string): Promise<void> {
       { name: "Delete branch", value: BranchAction.Delete },
       { name: chalk.dim("← Back"), value: BranchAction.Back },
     ],
-    pageSize: 20,
-  });
+    BranchAction.Back,
+  );
 
   if (action === BranchAction.Switch) {
     await switchToBranch(branch);
@@ -1768,16 +1764,7 @@ async function showStatus(): Promise<void> {
   log.print("");
 }
 
-async function selectWithEscape<T extends string>(
-  message: string,
-  choices: Array<{ name: string; value: T }>,
-  _cancelValue: T = "cancel" as T,
-): Promise<T> {
-  const result = await select({ message, choices, pageSize: 20 });
-  return result as T;
-}
-
-function renderMenu(message: string, choices: MenuChoice[], selectedIndex: number): void {
+function renderMenu(message: string, choices: Array<{ name: string }>, selectedIndex: number): void {
   const lines = choices.length + 1;
   process.stdout.write(`\x1b[${lines}A`);
   process.stdout.write("\x1b[0J");
@@ -1795,19 +1782,21 @@ function renderMenu(message: string, choices: MenuChoice[], selectedIndex: numbe
   }
 }
 
-async function selectWithShortcuts(message: string, choices: MenuChoice[]): Promise<string> {
+async function rawSelect<T extends string>(
+  message: string,
+  choices: Array<{ name: string; value: T; key?: string }>,
+  cancelValue?: T,
+): Promise<T> {
   if (!process.stdin.isTTY || typeof process.stdin.setRawMode !== "function") {
-    const result = await select({
-      message,
-      choices: choices.map((c) => ({ name: c.name, value: c.value })),
-      pageSize: 20,
-    });
-    return result;
+    const result = await select({ message, choices, pageSize: 20 });
+    return result as T;
   }
 
   return new Promise((resolve) => {
     let selectedIndex = 0;
-    const keyMap = new Map(choices.map((c, i) => [c.key.toLowerCase(), i]));
+    const keyMap = new Map(
+      choices.flatMap((c, i) => (c.key ? [[c.key.toLowerCase(), i] as [string, number]] : [])),
+    );
 
     log.print(
       `${chalk.bold.green("?")} ${chalk.bold(message)} ${chalk.dim("(use arrow keys, enter, or shortcut)")}`,
@@ -1837,6 +1826,11 @@ async function selectWithShortcuts(message: string, choices: MenuChoice[]): Prom
       rl.close();
     };
 
+    const clearMenu = () => {
+      const lines = choices.length + 1;
+      process.stdout.write(`\x1b[${lines}A\x1b[0J`);
+    };
+
     const handler = (_str: string | undefined, key: Key) => {
       if (!key) return;
 
@@ -1852,11 +1846,6 @@ async function selectWithShortcuts(message: string, choices: MenuChoice[]): Prom
         return;
       }
 
-      const clearMenu = () => {
-        const lines = choices.length + 1;
-        process.stdout.write(`\x1b[${lines}A\x1b[0J`);
-      };
-
       if (key.name === "return") {
         cleanup();
         clearMenu();
@@ -1867,10 +1856,14 @@ async function selectWithShortcuts(message: string, choices: MenuChoice[]): Prom
       if (key.name === "escape") {
         cleanup();
         clearMenu();
-        const backChoice = choices.find(
-          (c) => c.value === Sentinel.Back || c.value === MainAction.Quit,
-        );
-        resolve(backChoice?.value ?? Sentinel.Back);
+        if (cancelValue !== undefined) {
+          resolve(cancelValue);
+        } else {
+          const backChoice = choices.find(
+            (c) => c.value === Sentinel.Back || c.value === MainAction.Quit,
+          );
+          resolve(backChoice?.value ?? (Sentinel.Back as T));
+        }
         return;
       }
 
@@ -1891,6 +1884,18 @@ async function selectWithShortcuts(message: string, choices: MenuChoice[]): Prom
 
     process.stdin.on("keypress", handler);
   });
+}
+
+async function selectWithEscape<T extends string>(
+  message: string,
+  choices: Array<{ name: string; value: T }>,
+  cancelValue: T = "cancel" as T,
+): Promise<T> {
+  return rawSelect(message, choices, cancelValue);
+}
+
+async function selectWithShortcuts(message: string, choices: MenuChoice[]): Promise<string> {
+  return rawSelect(message, choices);
 }
 
 async function showAppLogs(): Promise<void> {
