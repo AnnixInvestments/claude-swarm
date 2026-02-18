@@ -5,6 +5,7 @@ export interface AppAdapterConfig {
     stop: string;
     kill: string;
     readyPattern?: string;
+    port?: number;
 }
 export declare class ConfigAdapter implements AppAdapter {
     readonly name: string;

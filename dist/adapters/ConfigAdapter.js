@@ -89,6 +89,34 @@ export class ConfigAdapter {
         }
     }
     async isRunning() {
+        const isWindows = process.platform === "win32";
+        if (this.config.port) {
+            try {
+                if (isWindows) {
+                    const result = execSync(`powershell -Command "Get-NetTCPConnection -LocalPort ${this.config.port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1"`, { encoding: "utf-8", stdio: "pipe" }).trim();
+                    return result !== "";
+                }
+                else {
+                    const result = execSync(`lsof -i :${this.config.port} -t 2>/dev/null`, {
+                        encoding: "utf-8",
+                        stdio: "pipe",
+                    }).trim();
+                    return result !== "";
+                }
+            }
+            catch {
+                return false;
+            }
+        }
+        if (isWindows) {
+            try {
+                const result = execSync(`powershell -Command "Get-Process | Where-Object { $_.CommandLine -like '*${this.config.start.replace(/'/g, "''")}*' } | Select-Object -First 1"`, { encoding: "utf-8", stdio: "pipe" }).trim();
+                return result !== "";
+            }
+            catch {
+                return false;
+            }
+        }
         try {
             const result = execSync(`pgrep -f "${this.config.start}" 2>/dev/null`, {
                 encoding: "utf-8",
@@ -101,6 +129,23 @@ export class ConfigAdapter {
         }
     }
     sendSignalToChildren(signal) {
+        const isWindows = process.platform === "win32";
+        if (isWindows && this.config.port) {
+            try {
+                const forceFlag = signal === "SIGKILL" ? "/F" : "";
+                execSync(`powershell -Command "$conn = Get-NetTCPConnection -LocalPort ${this.config.port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($conn) { Stop-Process -Id $conn.OwningProcess ${forceFlag} -ErrorAction SilentlyContinue }"`, { stdio: "pipe" });
+            }
+            catch { }
+            return;
+        }
+        if (isWindows) {
+            try {
+                const forceFlag = signal === "SIGKILL" ? "/F" : "";
+                execSync(`powershell -Command "Get-Process | Where-Object { $_.CommandLine -like '*${this.config.start.replace(/'/g, "''")}*' } | Stop-Process ${forceFlag} -ErrorAction SilentlyContinue"`, { stdio: "pipe" });
+            }
+            catch { }
+            return;
+        }
         try {
             execSync(`pkill -${signal} -f "${this.config.start}" 2>/dev/null`, { stdio: "pipe" });
         }
