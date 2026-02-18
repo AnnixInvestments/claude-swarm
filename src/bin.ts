@@ -1,14 +1,13 @@
 #!/usr/bin/env node
+import { execSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { execSync } from "node:child_process";
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-const hashFile = (p: string): string =>
-  createHash("sha256").update(readFileSync(p)).digest("hex");
+const hashFile = (p: string): string => createHash("sha256").update(readFileSync(p)).digest("hex");
 
 const hashDeps = (): string => {
   const lock = join(projectRoot, "package-lock.json");

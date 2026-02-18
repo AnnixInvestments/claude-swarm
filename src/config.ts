@@ -19,7 +19,7 @@ export interface SwarmConfig {
   apps?: AppAdapterConfig[];
 }
 
-const CONFIG_FILE_NAME = ".claude-swarm.json";
+const CONFIG_FILE_NAME = ".claude-swarm/config.json";
 const USER_CONFIG_DIR = join(homedir(), ".config", "claude-swarm");
 const PROJECTS_CONFIG_FILE = join(USER_CONFIG_DIR, "projects.json");
 

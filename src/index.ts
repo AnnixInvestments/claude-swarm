@@ -389,7 +389,7 @@ function detectClaudeSessions(): Session[] {
 
         result.push({
           pid,
-          name: cwd ? (basename(cwd) || "unknown") : `PID ${pid}`,
+          name: cwd ? basename(cwd) || "unknown" : `PID ${pid}`,
           branch,
           project,
           status: "working",
@@ -501,10 +501,7 @@ function printHeader(): void {
   const subtitle = "  parallel sessions · worktree isolation · dev server lifecycle";
   log.print(b.top(`┌${"─".repeat(width)}┐`));
   log.print(
-    b.top("│") +
-      b.top(titleText) +
-      " ".repeat(Math.max(0, width - titleText.length)) +
-      b.top("│"),
+    b.top("│") + b.top(titleText) + " ".repeat(Math.max(0, width - titleText.length)) + b.top("│"),
   );
   log.print(b.top("│") + chalk.dim(subtitle.padEnd(width)) + b.top("│"));
   log.print(b.divider(`├${"─".repeat(width)}┤`));
@@ -1757,14 +1754,16 @@ async function showStatus(): Promise<void> {
   log.print("");
 }
 
-function renderMenu(message: string, choices: Array<{ name: string }>, selectedIndex: number): void {
+function renderMenu(
+  message: string,
+  choices: Array<{ name: string }>,
+  selectedIndex: number,
+): void {
   const lines = choices.length + 1;
   process.stdout.write(`\x1b[${lines}A`);
   process.stdout.write("\x1b[0J");
 
-  log.print(
-    `${chalk.bold(message)} ${chalk.dim("(use arrow keys, enter, or shortcut)")}`,
-  );
+  log.print(`${chalk.bold(message)} ${chalk.dim("(use arrow keys, enter, or shortcut)")}`);
 
   for (let index = 0; index < choices.length; index++) {
     const choice = choices[index];
@@ -1791,9 +1790,7 @@ async function rawSelect<T extends string>(
       choices.flatMap((c, i) => (c.key ? [[c.key.toLowerCase(), i] as [string, number]] : [])),
     );
 
-    log.print(
-      `${chalk.bold(message)} ${chalk.dim("(use arrow keys, enter, or shortcut)")}`,
-    );
+    log.print(`${chalk.bold(message)} ${chalk.dim("(use arrow keys, enter, or shortcut)")}`);
     for (let index = 0; index < choices.length; index++) {
       const choice = choices[index];
       const isSelected = index === selectedIndex;

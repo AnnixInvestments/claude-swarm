@@ -1,6 +1,6 @@
 export type { AppAdapter } from "./AppAdapter.js";
 export { ConfigAdapter } from "./ConfigAdapter.js";
-export type { AppAdapterConfig } from "./ConfigAdapter.js";
+export type { AppAdapterConfig, PlatformCommand } from "./ConfigAdapter.js";
 export { DevServerAdapter } from "./DevServerAdapter.js";
 export { NestAdapter } from "./NestAdapter.js";
 export { NextAdapter } from "./NextAdapter.js";

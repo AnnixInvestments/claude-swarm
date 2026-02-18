@@ -1,15 +1,22 @@
 import { execSync, spawn } from "node:child_process";
-import { openSync, closeSync, readSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { closeSync, mkdirSync, openSync, readSync, statSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { AppAdapter } from "./AppAdapter.js";
+
+export type PlatformCommand = string | { mac: string; windows: string };
 
 export interface AppAdapterConfig {
   name: string;
-  start: string;
-  stop: string;
-  kill: string;
+  start: PlatformCommand;
+  stop: PlatformCommand;
+  kill: PlatformCommand;
   readyPattern?: string;
   port?: number;
+}
+
+function resolveCommand(cmd: PlatformCommand): string {
+  if (typeof cmd === "string") return cmd;
+  return process.platform === "win32" ? cmd.windows : cmd.mac;
 }
 
 export class ConfigAdapter implements AppAdapter {
@@ -25,15 +32,17 @@ export class ConfigAdapter implements AppAdapter {
   }
 
   logFile(): string {
-    return join(this.cwd, `.claude-swarm-${this.name}.log`);
+    return join(this.cwd, ".claude-swarm", "logs", `${this.name}.log`);
   }
 
   async start(): Promise<void> {
     const logPath = this.logFile();
+    mkdirSync(dirname(logPath), { recursive: true });
     const logFd = openSync(logPath, "a");
+    const startCmd = resolveCommand(this.config.start);
 
     if (!this.config.readyPattern) {
-      const proc = spawn(this.config.start, [], {
+      const proc = spawn(startCmd, [], {
         cwd: this.cwd,
         stdio: ["ignore", logFd, logFd],
         detached: true,
@@ -53,7 +62,7 @@ export class ConfigAdapter implements AppAdapter {
       initialSize = statSync(logPath).size;
     } catch {}
 
-    const proc = spawn(this.config.start, [], {
+    const proc = spawn(startCmd, [], {
       cwd: this.cwd,
       stdio: ["ignore", logFd, logFd],
       detached: true,
@@ -81,10 +90,11 @@ export class ConfigAdapter implements AppAdapter {
       const checkLog = () => {
         try {
           const fd = openSync(logPath, "r");
-          let bytesRead: number;
-          while ((bytesRead = readSync(fd, buf, 0, buf.length, offset)) > 0) {
+          let bytesRead = readSync(fd, buf, 0, buf.length, offset);
+          while (bytesRead > 0) {
             outputBuffer += buf.subarray(0, bytesRead).toString();
             offset += bytesRead;
+            bytesRead = readSync(fd, buf, 0, buf.length, offset);
           }
           closeSync(fd);
           if (pattern.test(outputBuffer)) finish();
@@ -109,34 +119,37 @@ export class ConfigAdapter implements AppAdapter {
   }
 
   async stop(): Promise<void> {
-    if (this.config.stop.startsWith("signal:")) {
-      const signal = this.config.stop.replace("signal:", "") as NodeJS.Signals;
+    const stopCmd = resolveCommand(this.config.stop);
+    if (stopCmd.startsWith("signal:")) {
+      const signal = stopCmd.replace("signal:", "") as NodeJS.Signals;
       this.killGroup(signal);
     } else {
       try {
-        execSync(this.config.stop, { cwd: this.cwd, stdio: "pipe" });
+        execSync(stopCmd, { cwd: this.cwd, stdio: "pipe" });
       } catch {}
       this.killGroup("SIGTERM");
     }
   }
 
   async kill(): Promise<void> {
-    if (this.config.kill.startsWith("signal:")) {
-      const signal = this.config.kill.replace("signal:", "") as NodeJS.Signals;
+    const killCmd = resolveCommand(this.config.kill);
+    if (killCmd.startsWith("signal:")) {
+      const signal = killCmd.replace("signal:", "") as NodeJS.Signals;
       this.killGroup(signal);
     } else {
       try {
-        execSync(this.config.kill, { cwd: this.cwd, stdio: "pipe" });
+        execSync(killCmd, { cwd: this.cwd, stdio: "pipe" });
       } catch {}
       this.killGroup("SIGKILL");
     }
   }
 
   async isRunning(): Promise<boolean> {
+    const startCmd = resolveCommand(this.config.start);
     if (process.platform === "win32") {
       try {
         const result = execSync(
-          `powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${this.config.start}*' } | Select-Object -First 1 -ExpandProperty ProcessId"`,
+          `powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${startCmd}*' } | Select-Object -First 1 -ExpandProperty ProcessId"`,
           { encoding: "utf-8", stdio: "pipe" },
         ).trim();
         return result !== "" && !Number.isNaN(Number(result));
@@ -153,7 +166,7 @@ export class ConfigAdapter implements AppAdapter {
       }
     }
     try {
-      const result = execSync(`pgrep -f "${this.config.start}" 2>/dev/null`, {
+      const result = execSync(`pgrep -f "${startCmd}" 2>/dev/null`, {
         encoding: "utf-8",
         stdio: "pipe",
       }).trim();
@@ -164,6 +177,7 @@ export class ConfigAdapter implements AppAdapter {
   }
 
   private killGroup(signal: NodeJS.Signals): void {
+    const startCmd = resolveCommand(this.config.start);
     if (process.platform === "win32") {
       if (this.pid !== undefined) {
         try {
@@ -173,7 +187,7 @@ export class ConfigAdapter implements AppAdapter {
         const forceFlag = signal === "SIGKILL" ? "-Force " : "";
         try {
           execSync(
-            `powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${this.config.start}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId ${forceFlag}-ErrorAction SilentlyContinue }"`,
+            `powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${startCmd}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId ${forceFlag}-ErrorAction SilentlyContinue }"`,
             { stdio: "pipe" },
           );
         } catch {}
@@ -188,7 +202,7 @@ export class ConfigAdapter implements AppAdapter {
       this.pid = undefined;
     }
     try {
-      execSync(`pkill -${signal} -f "${this.config.start}" 2>/dev/null`, { stdio: "pipe" });
+      execSync(`pkill -${signal} -f "${startCmd}" 2>/dev/null`, { stdio: "pipe" });
     } catch {}
   }
 }
