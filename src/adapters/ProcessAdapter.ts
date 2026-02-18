@@ -70,6 +70,19 @@ export class ProcessAdapter implements AppAdapter {
       return true;
     }
 
+    if (process.platform === "win32") {
+      try {
+        const pattern = `${this.config.command} ${this.config.args.join(" ")}`;
+        const result = execSync(
+          `powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${pattern}*' } | Select-Object -First 1 -ExpandProperty ProcessId"`,
+          { encoding: "utf-8", stdio: "pipe" },
+        ).trim();
+        return result !== "" && !Number.isNaN(Number(result));
+      } catch {
+        return false;
+      }
+    }
+
     try {
       const result = execSync(
         `pgrep -f "${this.config.command} ${this.config.args.join(" ")}" 2>/dev/null`,

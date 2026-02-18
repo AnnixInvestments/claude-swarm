@@ -10,13 +10,12 @@
   },
   "license": "MIT",
   "bin": {
-    "claude-swarm": "./dist/index.js"
+    "claude-swarm": "./dist/bin.js"
   },
   "main": "./dist/index.js",
   "type": "module",
   "files": [
-    "dist",
-    "bin"
+    "dist"
   ],
   "scripts": {
     "build": "tsc",

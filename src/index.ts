@@ -3,7 +3,7 @@
 import { type ChildProcess, execSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { type Key, createInterface, emitKeypressEvents } from "node:readline";
 import { checkbox, confirm, input, select } from "@inquirer/prompts";
 import chalk from "chalk";
@@ -146,7 +146,7 @@ const DEFAULT_ROOT_DIR = process.cwd();
 const DEFAULT_BRANCH_PREFIX = "claude/";
 
 let currentProject: ProjectConfig = {
-  name: DEFAULT_ROOT_DIR.split("/").pop() ?? "project",
+  name: basename(DEFAULT_ROOT_DIR) || "project",
   path: DEFAULT_ROOT_DIR,
 };
 
@@ -233,7 +233,7 @@ async function selectProjectForSession(): Promise<ProjectConfig | null> {
     });
 
     const trimmedPath = projectPath.trim();
-    const defaultName = trimmedPath.split("/").pop() ?? "project";
+    const defaultName = basename(trimmedPath) || "project";
 
     const projectName = await input({
       message: "Project name:",
@@ -383,13 +383,13 @@ function detectClaudeSessions(): Session[] {
             silent: true,
           });
           if (repoRoot) {
-            project = repoRoot.split("/").pop() ?? "unknown";
+            project = basename(repoRoot) || "unknown";
           }
         }
 
         result.push({
           pid,
-          name: cwd ? (cwd.split("/").pop() ?? "unknown") : `PID ${pid}`,
+          name: cwd ? (basename(cwd) || "unknown") : `PID ${pid}`,
           branch,
           project,
           status: "working",
@@ -1737,14 +1737,14 @@ async function showStatus(): Promise<void> {
   }
   printEmptyLine();
 
-  const anyRunning = await isAnyAdapterRunning();
   const hasRealAdapters = appAdapters.some((a) => !(a instanceof NullAdapter));
 
   if (hasRealAdapters) {
     printSection("Apps");
     for (const adapter of appAdapters) {
       if (!(adapter instanceof NullAdapter)) {
-        const statusText = anyRunning
+        const running = await adapter.isRunning();
+        const statusText = running
           ? chalk.green(`${adapter.name}: running`)
           : chalk.dim(`${adapter.name}: stopped`);
         printBoxLine(statusText);
@@ -1763,7 +1763,7 @@ function renderMenu(message: string, choices: Array<{ name: string }>, selectedI
   process.stdout.write("\x1b[0J");
 
   log.print(
-    `${chalk.bold.green("?")} ${chalk.bold(message)} ${chalk.dim("(use arrow keys, enter, or shortcut)")}`,
+    `${chalk.bold(message)} ${chalk.dim("(use arrow keys, enter, or shortcut)")}`,
   );
 
   for (let index = 0; index < choices.length; index++) {
@@ -1792,7 +1792,7 @@ async function rawSelect<T extends string>(
     );
 
     log.print(
-      `${chalk.bold.green("?")} ${chalk.bold(message)} ${chalk.dim("(use arrow keys, enter, or shortcut)")}`,
+      `${chalk.bold(message)} ${chalk.dim("(use arrow keys, enter, or shortcut)")}`,
     );
     for (let index = 0; index < choices.length; index++) {
       const choice = choices[index];
@@ -1813,7 +1813,10 @@ async function rawSelect<T extends string>(
       return;
     }
 
+    process.stdout.write("\x1b[?25l");
+
     const cleanup = () => {
+      process.stdout.write("\x1b[?25h");
       process.stdin.setRawMode(false);
       process.stdin.removeAllListeners("keypress");
       rl.close();
@@ -1821,7 +1824,7 @@ async function rawSelect<T extends string>(
 
     const clearMenu = () => {
       const lines = choices.length + 1;
-      process.stdout.write(`\x1b[${lines}A\x1b[0J`);
+      process.stdout.write(`\x1b[${lines}A\r\x1b[0J`);
     };
 
     const handler = (_str: string | undefined, key: Key) => {
@@ -1840,15 +1843,15 @@ async function rawSelect<T extends string>(
       }
 
       if (key.name === "return") {
-        cleanup();
         clearMenu();
+        cleanup();
         resolve(choices[selectedIndex].value);
         return;
       }
 
       if (key.name === "escape") {
-        cleanup();
         clearMenu();
+        cleanup();
         if (cancelValue !== undefined) {
           resolve(cancelValue);
         } else {
@@ -1861,6 +1864,7 @@ async function rawSelect<T extends string>(
       }
 
       if (key.ctrl && key.name === "c") {
+        clearMenu();
         cleanup();
         process.exit(0);
       }
@@ -1868,8 +1872,8 @@ async function rawSelect<T extends string>(
       const pressed = (key.name ?? key.sequence ?? "").toLowerCase();
       const matchIndex = keyMap.get(pressed);
       if (matchIndex !== undefined) {
-        cleanup();
         clearMenu();
+        cleanup();
         resolve(choices[matchIndex].value);
         return;
       }
@@ -1900,63 +1904,69 @@ async function showAppLogs(): Promise<void> {
     return;
   }
 
-  let adapter = loggableAdapters[0];
+  const viewLog = async (adapter: AppAdapter) => {
+    const logPath = adapter.logFile();
+    if (!logPath || !existsSync(logPath)) {
+      printBoxLine(chalk.dim(`No log file found for ${adapter.name}. Has it been started?`));
+      await new Promise<void>((resolve) => setTimeout(resolve, 1500));
+      return;
+    }
 
-  if (loggableAdapters.length > 1) {
-    const choices = [
-      ...loggableAdapters.map((a) => ({ name: a.name, value: a.name })),
-      { name: chalk.dim("← Cancel"), value: Sentinel.Cancel },
-    ];
-    const selected = await selectWithEscape("View logs for:", choices, Sentinel.Cancel);
-    if (selected === Sentinel.Cancel) return;
-    adapter = loggableAdapters.find((a) => a.name === selected) ?? loggableAdapters[0];
-  }
+    process.stdout.write("\x1b[2J\x1b[H");
+    log.print(b.divider(`── ${adapter.name} logs ──`) + chalk.dim(" (q or Escape to return)"));
+    log.print(chalk.dim(`   ${logPath}`));
+    log.print("");
 
-  const logPath = adapter.logFile();
-  if (!logPath || !existsSync(logPath)) {
-    printBoxLine(chalk.dim(`No log file found for ${adapter.name}. Has it been started?`));
-    await new Promise<void>((resolve) => setTimeout(resolve, 1500));
+    const tail =
+      process.platform === "win32"
+        ? spawn("powershell", ["-Command", `Get-Content -Path '${logPath}' -Wait`], {
+            stdio: ["ignore", "pipe", "pipe"],
+          })
+        : spawn("tail", ["-f", logPath], { stdio: ["ignore", "pipe", "pipe"] });
+    tail.stdout?.pipe(process.stdout);
+    tail.stderr?.pipe(process.stderr);
+
+    const stopTail = () => tail.kill("SIGTERM");
+
+    if (process.stdin.isTTY) {
+      process.stdin.resume();
+      emitKeypressEvents(process.stdin);
+      process.stdin.setRawMode(true);
+      process.stdin.on("keypress", (_str, key) => {
+        if (!key) return;
+        if (key.name === "q" || key.name === "escape" || (key.ctrl && key.name === "c")) {
+          stopTail();
+        }
+      });
+    }
+
+    await new Promise<void>((resolve) => {
+      tail.on("close", () => resolve());
+    });
+
+    if (process.stdin.isTTY) {
+      process.stdin.setRawMode(false);
+    }
+    process.stdin.removeAllListeners("keypress");
+
+    log.print("");
+  };
+
+  if (loggableAdapters.length === 1) {
+    await viewLog(loggableAdapters[0]);
     return;
   }
 
-  process.stdout.write("\x1b[2J\x1b[H");
-  log.print(b.divider(`── ${adapter.name} logs ──`) + chalk.dim(" (q or Escape to return)"));
-  log.print(chalk.dim(`   ${logPath}`));
-  log.print("");
-
-  const tail =
-    process.platform === "win32"
-      ? spawn("powershell", ["-Command", `Get-Content -Path '${logPath}' -Wait`], {
-          stdio: ["ignore", "pipe", "pipe"],
-        })
-      : spawn("tail", ["-f", logPath], { stdio: ["ignore", "pipe", "pipe"] });
-  tail.stdout?.pipe(process.stdout);
-  tail.stderr?.pipe(process.stderr);
-
-  const stopTail = () => tail.kill("SIGTERM");
-
-  if (process.stdin.isTTY) {
-    process.stdin.resume();
-    emitKeypressEvents(process.stdin);
-    process.stdin.setRawMode(true);
-    process.stdin.on("keypress", (_str, key) => {
-      if (!key) return;
-      if (key.name === "q" || key.name === "escape" || (key.ctrl && key.name === "c")) {
-        stopTail();
-      }
-    });
+  while (true) {
+    const choices = [
+      ...loggableAdapters.map((a) => ({ name: a.name, value: a.name })),
+      { name: chalk.dim("← Back"), value: Sentinel.Cancel },
+    ];
+    const selected = await selectWithEscape("View logs for:", choices, Sentinel.Cancel);
+    if (selected === Sentinel.Cancel) return;
+    const adapter = loggableAdapters.find((a) => a.name === selected) ?? loggableAdapters[0];
+    await viewLog(adapter);
   }
-
-  await new Promise<void>((resolve) => {
-    tail.on("close", () => resolve());
-  });
-
-  if (process.stdin.isTTY) {
-    process.stdin.setRawMode(false);
-  }
-  process.stdin.removeAllListeners("keypress");
-
-  log.print("");
 }
 
 async function mainMenu(): Promise<void> {
@@ -1965,7 +1975,7 @@ async function mainMenu(): Promise<void> {
   if (config.projects.length === 0) {
     const isGitRepo = existsSync(join(DEFAULT_ROOT_DIR, ".git"));
     if (isGitRepo) {
-      const defaultName = DEFAULT_ROOT_DIR.split("/").pop() ?? "project";
+      const defaultName = basename(DEFAULT_ROOT_DIR) || "project";
       const defaultProject: ProjectConfig = {
         name: defaultName,
         path: DEFAULT_ROOT_DIR,
@@ -2071,7 +2081,7 @@ async function mainMenu(): Promise<void> {
           await stopAdapters();
         }
       }
-      log.debug("\nGoodbye!");
+      process.stdout.write("\r\n");
       process.exit(0);
     }
   }

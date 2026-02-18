@@ -65,6 +65,64 @@ All menu action string values are declared as TypeScript string enums in `src/in
 | `ProjectAction` | Project selector (add-new/cancel) |
 | `Sentinel` | Mixed-type selects where the value can be a dynamic string OR a sentinel (`cancel`, `back`, `create-new`) |
 
+### Adapter lifecycle contract
+
+`ConfigAdapter` drives stop/kill in two phases:
+
+1. Runs the user-supplied shell command (e.g. `lsof -ti:4001 | xargs kill -15`) — this typically kills the bound port process.
+2. Immediately calls `sendSignalToChildren(SIGTERM/SIGKILL)` — this runs `pkill -f "<start-command>"` to also kill the pnpm launcher process that invoked the script.
+
+Both phases are needed because `isRunning()` uses `pgrep -f "<start-command>"` to detect the launcher. Without step 2, the launcher stays alive after a port-based stop, causing `isRunning()` to return `true` even though nothing is serving.
+
+`showStatus()` calls each adapter's `isRunning()` individually so each app shows its own real status, not a shared boolean.
+
+### Windows compatibility
+
+Platform-specific branches are needed in several places. The pattern used throughout:
+
+```typescript
+if (process.platform === "win32") {
+  // PowerShell / Windows equivalent
+  return;
+}
+// Unix path
+```
+
+**Already handled (Windows branches exist):**
+- `spawnClaudeSession()` — Windows Terminal / cmd fallback
+- `detectClaudeSessions()` — uses `tasklist` instead of `ps`
+- `killExternalProcess()` — uses `taskkill` / PowerShell `Stop-Process`
+- `showAppLogs()` — uses `Get-Content -Wait` instead of `tail -f`
+- `ConfigAdapter.isRunning()` — uses `Get-CimInstance Win32_Process` CIM query
+- `ConfigAdapter.sendSignalToChildren()` — uses PowerShell `Stop-Process`
+- `DevServerAdapter.isRunning()` — uses `Get-NetTCPConnection`
+- `DevServerAdapter.stop/kill()` — uses PowerShell `Stop-Process`
+- `ProcessAdapter.isRunning()` — uses `Get-CimInstance Win32_Process` CIM query
+
+**Path handling:** Use `path.basename()` instead of `split("/").pop()` — `basename()` handles both `\` and `/` separators correctly on all platforms.
+
+**`bin/claude-swarm`:** The bash dev-launcher is Mac/Linux only. On Windows, the tool is invoked via the npm/pnpm bin (`dist/index.js`) directly — the bash script is never needed.
+
+**Windows `.claude-swarm.json` config:** The `stop` and `kill` commands in project configs must use Windows-compatible commands. On Mac/Linux these typically use `lsof`/`kill`; on Windows use `netstat`/`taskkill` or PowerShell equivalents.
+
+### Local development testing
+
+To test a local build of claude-swarm from the annix project without publishing:
+
+```bash
+cd annix
+pnpm link ../claude-swarm   # symlinks node_modules/@annix/claude-swarm → ../claude-swarm
+```
+
+To restore the released version:
+
+```bash
+cd annix
+pnpm install                 # re-fetches from github:AnnixInvestments/claude-swarm
+```
+
+After any source change in `claude-swarm/src/`, run `npm run build` in the claude-swarm repo (the `bin/claude-swarm` launcher will also do this automatically if the hash is stale).
+
 ### Log files
 
 `ConfigAdapter` streams all stdout/stderr to `.claude-swarm-<name>.log` in the project directory. These files are gitignored via `.claude-swarm-*.log`. The TUI "View logs [l]" menu tails the log file live using `tail -f`.

@@ -1,5 +1,5 @@
 import { execSync, spawn } from "node:child_process";
-import { createWriteStream } from "node:fs";
+import { openSync, closeSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { AppAdapter } from "./AppAdapter.js";
 
@@ -16,6 +16,7 @@ export class ConfigAdapter implements AppAdapter {
   readonly name: string;
   private readonly config: AppAdapterConfig;
   private readonly cwd: string;
+  private pid: number | undefined;
 
   constructor(config: AppAdapterConfig, cwd: string) {
     this.name = config.name;
@@ -29,122 +30,128 @@ export class ConfigAdapter implements AppAdapter {
 
   async start(): Promise<void> {
     const logPath = this.logFile();
-    const logStream = createWriteStream(logPath, { flags: "a" });
+    const logFd = openSync(logPath, "a");
 
     if (!this.config.readyPattern) {
       const proc = spawn(this.config.start, [], {
         cwd: this.cwd,
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: ["ignore", logFd, logFd],
         detached: true,
         shell: true,
       });
-      proc.stdout?.pipe(logStream);
-      proc.stderr?.pipe(logStream);
+      this.pid = proc.pid;
       proc.unref();
+      closeSync(logFd);
       return;
     }
 
     const pattern = new RegExp(this.config.readyPattern);
     const timeoutMs = 120000;
 
+    let initialSize = 0;
+    try {
+      initialSize = statSync(logPath).size;
+    } catch {}
+
+    const proc = spawn(this.config.start, [], {
+      cwd: this.cwd,
+      stdio: ["ignore", logFd, logFd],
+      detached: true,
+      shell: true,
+    });
+    this.pid = proc.pid;
+    proc.unref();
+    closeSync(logFd);
+
     await new Promise<void>((resolve, reject) => {
-      const proc = spawn(this.config.start, [], {
-        cwd: this.cwd,
-        stdio: ["ignore", "pipe", "pipe"],
-        detached: true,
-        shell: true,
-      });
-
-      proc.stdout?.pipe(logStream, { end: false });
-      proc.stderr?.pipe(logStream, { end: false });
-
       let settled = false;
+      let offset = initialSize;
+      let outputBuffer = "";
+      const buf = Buffer.alloc(65536);
+
       const finish = (err?: Error) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        proc.unref();
-        if (err) {
-          reject(err);
-        } else {
-          resolve();
-        }
+        clearInterval(interval);
+        if (err) reject(err);
+        else resolve();
       };
 
-      const checkOutput = (data: Buffer) => {
-        if (pattern.test(data.toString())) {
-          finish();
-        }
+      const checkLog = () => {
+        try {
+          const fd = openSync(logPath, "r");
+          let bytesRead: number;
+          while ((bytesRead = readSync(fd, buf, 0, buf.length, offset)) > 0) {
+            outputBuffer += buf.subarray(0, bytesRead).toString();
+            offset += bytesRead;
+          }
+          closeSync(fd);
+          if (pattern.test(outputBuffer)) finish();
+        } catch {}
       };
 
-      proc.stdout?.on("data", checkOutput);
-      proc.stderr?.on("data", checkOutput);
-      proc.on("error", (err) => finish(err));
+      const interval = setInterval(checkLog, 100);
+
+      proc.on("exit", (code) => {
+        if (!settled) {
+          finish(new Error(`${this.name} exited before becoming ready (exit code: ${code})`));
+        }
+      });
 
       const timer = setTimeout(
-        () => finish(new Error(`${this.name} did not start within ${timeoutMs}ms`)),
+        () => finish(new Error(`${this.name} did not become ready within ${timeoutMs / 1000}s`)),
         timeoutMs,
       );
+
+      checkLog();
     });
   }
 
   async stop(): Promise<void> {
     if (this.config.stop.startsWith("signal:")) {
       const signal = this.config.stop.replace("signal:", "") as NodeJS.Signals;
-      this.sendSignalToChildren(signal);
+      this.killGroup(signal);
     } else {
       try {
         execSync(this.config.stop, { cwd: this.cwd, stdio: "pipe" });
       } catch {}
+      this.killGroup("SIGTERM");
     }
   }
 
   async kill(): Promise<void> {
     if (this.config.kill.startsWith("signal:")) {
       const signal = this.config.kill.replace("signal:", "") as NodeJS.Signals;
-      this.sendSignalToChildren(signal);
+      this.killGroup(signal);
     } else {
       try {
         execSync(this.config.kill, { cwd: this.cwd, stdio: "pipe" });
       } catch {}
+      this.killGroup("SIGKILL");
     }
   }
 
   async isRunning(): Promise<boolean> {
-    const isWindows = process.platform === "win32";
-
-    if (this.config.port) {
-      try {
-        if (isWindows) {
-          const result = execSync(
-            `powershell -Command "Get-NetTCPConnection -LocalPort ${this.config.port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1"`,
-            { encoding: "utf-8", stdio: "pipe" },
-          ).trim();
-          return result !== "";
-        } else {
-          const result = execSync(`lsof -i :${this.config.port} -t 2>/dev/null`, {
-            encoding: "utf-8",
-            stdio: "pipe",
-          }).trim();
-          return result !== "";
-        }
-      } catch {
-        return false;
-      }
-    }
-
-    if (isWindows) {
+    if (process.platform === "win32") {
       try {
         const result = execSync(
-          `powershell -Command "Get-Process | Where-Object { $_.CommandLine -like '*${this.config.start.replace(/'/g, "''")}*' } | Select-Object -First 1"`,
+          `powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${this.config.start}*' } | Select-Object -First 1 -ExpandProperty ProcessId"`,
           { encoding: "utf-8", stdio: "pipe" },
         ).trim();
-        return result !== "";
+        return result !== "" && !Number.isNaN(Number(result));
       } catch {
         return false;
       }
     }
-
+    if (this.pid !== undefined) {
+      try {
+        process.kill(this.pid, 0);
+        return true;
+      } catch {
+        this.pid = undefined;
+      }
+    }
     try {
       const result = execSync(`pgrep -f "${this.config.start}" 2>/dev/null`, {
         encoding: "utf-8",
@@ -156,31 +163,30 @@ export class ConfigAdapter implements AppAdapter {
     }
   }
 
-  private sendSignalToChildren(signal: NodeJS.Signals): void {
-    const isWindows = process.platform === "win32";
-
-    if (isWindows && this.config.port) {
-      try {
-        const forceFlag = signal === "SIGKILL" ? "/F" : "";
-        execSync(
-          `powershell -Command "$conn = Get-NetTCPConnection -LocalPort ${this.config.port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($conn) { Stop-Process -Id $conn.OwningProcess ${forceFlag} -ErrorAction SilentlyContinue }"`,
-          { stdio: "pipe" },
-        );
-      } catch {}
+  private killGroup(signal: NodeJS.Signals): void {
+    if (process.platform === "win32") {
+      if (this.pid !== undefined) {
+        try {
+          execSync(`taskkill /PID ${this.pid} /T /F`, { stdio: "pipe" });
+        } catch {}
+      } else {
+        const forceFlag = signal === "SIGKILL" ? "-Force " : "";
+        try {
+          execSync(
+            `powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${this.config.start}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId ${forceFlag}-ErrorAction SilentlyContinue }"`,
+            { stdio: "pipe" },
+          );
+        } catch {}
+      }
+      this.pid = undefined;
       return;
     }
-
-    if (isWindows) {
+    if (this.pid !== undefined) {
       try {
-        const forceFlag = signal === "SIGKILL" ? "/F" : "";
-        execSync(
-          `powershell -Command "Get-Process | Where-Object { $_.CommandLine -like '*${this.config.start.replace(/'/g, "''")}*' } | Stop-Process ${forceFlag} -ErrorAction SilentlyContinue"`,
-          { stdio: "pipe" },
-        );
+        process.kill(-this.pid, signal);
       } catch {}
-      return;
+      this.pid = undefined;
     }
-
     try {
       execSync(`pkill -${signal} -f "${this.config.start}" 2>/dev/null`, { stdio: "pipe" });
     } catch {}

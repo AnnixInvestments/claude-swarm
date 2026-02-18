@@ -25,48 +25,40 @@ export abstract class DevServerAdapter implements AppAdapter {
   }
 
   async stop(): Promise<void> {
-    const isWindows = process.platform === "win32";
-
-    if (isWindows) {
+    if (process.platform === "win32") {
       try {
         execSync(
-          `powershell -Command "$conn = Get-NetTCPConnection -LocalPort ${this.port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($conn) { Stop-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue }"`,
+          `powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${this.processPattern}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -ErrorAction SilentlyContinue }"`,
           { stdio: "pipe" },
         );
       } catch {}
       return;
     }
-
     try {
       execSync(`pkill -f "${this.processPattern}" 2>/dev/null`, { stdio: "pipe" });
     } catch {}
   }
 
   async kill(): Promise<void> {
-    const isWindows = process.platform === "win32";
-
-    if (isWindows) {
+    if (process.platform === "win32") {
       try {
         execSync(
-          `powershell -Command "$conn = Get-NetTCPConnection -LocalPort ${this.port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($conn) { Stop-Process -Id $conn.OwningProcess -Force -ErrorAction SilentlyContinue }"`,
+          `powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${this.processPattern}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"`,
           { stdio: "pipe" },
         );
       } catch {}
       return;
     }
-
     try {
       execSync(`pkill -9 -f "${this.processPattern}" 2>/dev/null`, { stdio: "pipe" });
     } catch {}
   }
 
   async isRunning(): Promise<boolean> {
-    const isWindows = process.platform === "win32";
-
-    if (isWindows) {
+    if (process.platform === "win32") {
       try {
         const result = execSync(
-          `powershell -Command "Get-NetTCPConnection -LocalPort ${this.port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1"`,
+          `powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort ${this.port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1"`,
           { encoding: "utf-8", stdio: "pipe" },
         ).trim();
         return result !== "";
@@ -74,7 +66,6 @@ export abstract class DevServerAdapter implements AppAdapter {
         return false;
       }
     }
-
     try {
       const result = execSync(`lsof -i :${this.port} -sTCP:LISTEN 2>/dev/null | grep -c LISTEN`, {
         encoding: "utf-8",
