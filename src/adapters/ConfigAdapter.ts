@@ -3,6 +3,8 @@ import { closeSync, mkdirSync, openSync, readSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { AppAdapter } from "./AppAdapter.js";
 
+const isWindows = process.platform === "win32";
+
 export type PlatformCommand = string | { mac: string; windows: string };
 
 export interface AppAdapterConfig {
@@ -18,6 +20,13 @@ export interface AppAdapterConfig {
 function resolveCommand(cmd: PlatformCommand): string {
   if (typeof cmd === "string") return cmd;
   return process.platform === "win32" ? cmd.windows : cmd.mac;
+}
+
+function wrapForShell(cmd: string): string {
+  if (process.platform === "win32" && cmd.trim().endsWith(".ps1")) {
+    return `powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& '${cmd}'"`;
+  }
+  return cmd;
 }
 
 export class ConfigAdapter implements AppAdapter {
@@ -41,14 +50,15 @@ export class ConfigAdapter implements AppAdapter {
     const logPath = this.logFile();
     mkdirSync(dirname(logPath), { recursive: true });
     const logFd = openSync(logPath, "a");
-    const startCmd = resolveCommand(this.config.start);
+    const startCmd = wrapForShell(resolveCommand(this.config.start));
 
     if (!this.config.readyPattern) {
       const proc = spawn(startCmd, [], {
         cwd: this.cwd,
         stdio: ["ignore", logFd, logFd],
-        detached: true,
+        detached: !isWindows,
         shell: true,
+        windowsHide: true,
       });
       this.pid = proc.pid;
       proc.unref();
@@ -67,8 +77,9 @@ export class ConfigAdapter implements AppAdapter {
     const proc = spawn(startCmd, [], {
       cwd: this.cwd,
       stdio: ["ignore", logFd, logFd],
-      detached: true,
+      detached: !isWindows,
       shell: true,
+      windowsHide: true,
     });
     this.pid = proc.pid;
     proc.unref();
