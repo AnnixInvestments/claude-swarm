@@ -23,19 +23,38 @@ npm install -g @annix/claude-swarm
 
 ## Usage
 
+### Interactive TUI
+
 Run from any git repository:
 
 ```sh
 claude-swarm
 ```
 
-The tool will detect the current project and load configuration from `.claude-swarm.json` in the current directory if present.
+### Headless subcommands
+
+```sh
+claude-swarm start    # start all configured apps and wait for ready
+claude-swarm stop     # stop all apps gracefully
+claude-swarm restart  # stop then start
+claude-swarm status   # print running/stopped state per app
+claude-swarm logs     # print last 50 lines per app log
+```
+
+These are the same actions available in the TUI, usable from scripts and `package.json`. The conventional wiring is:
+
+```json
+"dev":  "claude-swarm start",
+"stop": "claude-swarm stop"
+```
+
+The tool will detect the current project and load configuration from `.claude-swarm/config.json` in the current directory if present.
 
 ## Project configuration
 
-### `.claude-swarm.json`
+### `.claude-swarm/config.json`
 
-Create a `.claude-swarm.json` in your project root to configure the branch prefix and dev servers:
+Create `.claude-swarm/config.json` in your project root to configure the branch prefix and dev servers. Add `.claude-swarm/logs/` and `.claude-swarm/registry.json` to `.gitignore`.
 
 ```json
 {
@@ -44,18 +63,31 @@ Create a `.claude-swarm.json` in your project root to configure the branch prefi
     {
       "name": "backend",
       "start": "pnpm dev:backend",
-      "stop": "lsof -ti:4001 | xargs kill -15 2>/dev/null; true",
-      "kill": "lsof -ti:4001 | xargs kill -9 2>/dev/null; true",
+      "stop": "signal:SIGTERM",
+      "kill": "signal:SIGKILL",
+      "port": 4001,
       "readyPattern": "Nest application successfully started"
     },
     {
       "name": "frontend",
       "start": "pnpm dev:frontend",
-      "stop": "lsof -ti:3000 | xargs kill -15 2>/dev/null; true",
-      "kill": "lsof -ti:3000 | xargs kill -9 2>/dev/null; true",
+      "stop": "signal:SIGTERM",
+      "kill": "signal:SIGKILL",
+      "port": 3000,
+      "health": "http://localhost:3000/api/health",
       "readyPattern": "Ready in"
     }
   ]
+}
+```
+
+For platform-specific start/stop scripts, use the `{ mac, windows }` object form:
+
+```json
+{
+  "start": { "mac": "./run-dev.sh", "windows": ".\\run-dev.ps1" },
+  "stop":  { "mac": "./kill-dev.sh", "windows": ".\\kill-dev.ps1" },
+  "kill":  { "mac": "./kill-dev.sh", "windows": ".\\kill-dev.ps1" }
 }
 ```
 
@@ -71,32 +103,42 @@ Create a `.claude-swarm.json` in your project root to configure the branch prefi
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `name` | `string` | Yes | Display name shown in the TUI |
-| `start` | `string` | Yes | Shell command to start the server |
-| `stop` | `string` | Yes | Shell command or signal to stop gracefully (e.g. `signal:SIGTERM`) |
-| `kill` | `string` | Yes | Shell command or signal to force-stop (e.g. `signal:SIGKILL`, or `lsof -ti:PORT | xargs kill -9`) |
-| `readyPattern` | `string` | No | Regex to match against stdout/stderr to detect when the server is ready |
+| `start` | `PlatformCommand` | Yes | Command to start the server |
+| `stop` | `PlatformCommand` | Yes | Command or `signal:SIGTERM` to stop gracefully |
+| `kill` | `PlatformCommand` | Yes | Command or `signal:SIGKILL` to force-stop |
+| `port` | `number` | No | Port the app binds to — used for precise kill and status detection |
+| `health` | `string` | No | HTTP URL polled by `isRunning()` — takes priority over port detection |
+| `readyPattern` | `string` | No | Regex matched against log output to detect when the server is ready |
+
+`PlatformCommand` is `string | { mac: string; windows: string }`.
 
 When `readyPattern` is set, `start` blocks until the pattern matches or the 120 second timeout elapses.
 
-Dev server output is always streamed to `.claude-swarm-<name>.log` in the project directory, regardless of whether `readyPattern` is set. Add `.claude-swarm-*.log` to your `.gitignore`.
+Dev server output is streamed to `logs/<name>.log` in the project directory.
 
-### Stop vs Kill commands
+### isRunning priority
 
-- **stop**: Sent first; should request graceful shutdown (e.g. SIGTERM or port-based kill -15)
-- **kill**: Fallback if stop throws; should force-terminate (e.g. SIGKILL or port-based kill -9)
+1. **Health endpoint** (`health`) — HTTP GET, 3 s timeout; most accurate
+2. **Port** (`port`) — checks whether the port is bound; platform-native
+3. **PID** — checks the tracked process directly
 
-Use port-based kill commands (via `lsof`) for processes spawned through npm/pnpm scripts, as the script process PID differs from the actual server PID:
+### Stop and kill
 
-```
-"stop": "lsof -ti:4001 | xargs kill -15 2>/dev/null; true"
-"kill": "lsof -ti:4001 | xargs kill -9 2>/dev/null; true"
-```
+`start()` always calls `kill()` first so stale processes from previous runs are cleaned up before a new one starts.
 
-Use signal format for processes you start directly:
+When `port` is configured, `stop()` and `kill()` target only that port — no broad process-pattern matching that could hit unrelated processes.
 
-```
-"stop": "signal:SIGTERM"
+Use `signal:` when claude-swarm owns the PID directly:
+
+```json
+"stop": "signal:SIGTERM",
 "kill": "signal:SIGKILL"
+```
+
+Use platform-specific scripts when the start command is a shell script that manages its own lifecycle:
+
+```json
+"stop": { "mac": "./kill-dev.sh", "windows": ".\\kill-dev.ps1" }
 ```
 
 ## Multi-project support
@@ -129,15 +171,7 @@ Project configurations are saved to `~/.config/claude-swarm/projects.json`. This
 
 ## Bin launcher
 
-The `bin/claude-swarm` script provides hash-based auto-install/build: it only runs `npm install` or `npm run build` when `package-lock.json` or `src/` files have changed since the last run. This means subsequent invocations start instantly.
-
-```sh
-# From annix:
-pnpm claude-swarm
-
-# Directly:
-../claude-swarm/bin/claude-swarm
-```
+The `src/bin.ts` script provides hash-based auto-install/build: it only runs `npm install` or `npm run build` when source files have changed since the last run. This means subsequent invocations start instantly.
 
 ## Branch workflow
 
@@ -172,7 +206,7 @@ import {
 | `NextAdapter` | Next.js frontend (`next dev`) |
 | `ViteAdapter` | Vite dev server (`vite`) |
 | `NullAdapter` | No-op for projects with no managed dev server |
-| `ConfigAdapter` | Generic adapter driven by `.claude-swarm.json` |
+| `ConfigAdapter` | Generic adapter driven by `.claude-swarm/config.json` |
 | `DevServerAdapter` | Abstract base class; extend to build custom adapters |
 
 ### Custom adapters

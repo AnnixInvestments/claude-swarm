@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { type ChildProcess, execSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { type Key, createInterface, emitKeypressEvents } from "node:readline";
@@ -58,6 +58,14 @@ interface SpawnOptions {
   createBranch?: boolean;
   headless?: boolean;
   task?: string;
+}
+
+enum Subcommand {
+  Start = "start",
+  Stop = "stop",
+  Restart = "restart",
+  Status = "status",
+  Logs = "logs",
 }
 
 enum MainAction {
@@ -1985,12 +1993,18 @@ async function mainMenu(): Promise<void> {
       process.exit(1);
     }
   } else {
-    const defaultProjectName = config.defaultProject ?? config.projects[0].name;
-    const defaultProject = config.projects.find((p) => p.name === defaultProjectName);
-    if (defaultProject) {
-      initProject(defaultProject);
+    const cwdProject = config.projects.find((p) => p.path === DEFAULT_ROOT_DIR);
+    if (cwdProject) {
+      initProject(cwdProject);
+    } else if (existsSync(join(DEFAULT_ROOT_DIR, ".git"))) {
+      const defaultName = basename(DEFAULT_ROOT_DIR) || "project";
+      const newProject: ProjectConfig = { name: defaultName, path: DEFAULT_ROOT_DIR };
+      addProject(newProject);
+      initProject(newProject);
     } else {
-      initProject(config.projects[0]);
+      const defaultProjectName = config.defaultProject ?? config.projects[0].name;
+      const defaultProject = config.projects.find((p) => p.name === defaultProjectName);
+      initProject(defaultProject ?? config.projects[0]);
     }
   }
 
@@ -2085,6 +2099,52 @@ async function mainMenu(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  const subcommand = process.argv[2] as Subcommand | undefined;
+  const validSubcommands: string[] = Object.values(Subcommand);
+
+  if (subcommand !== undefined && validSubcommands.includes(subcommand)) {
+    initProject(currentProject);
+
+    switch (subcommand) {
+      case Subcommand.Start:
+        await startAdapters();
+        break;
+
+      case Subcommand.Stop:
+        await stopAdapters();
+        break;
+
+      case Subcommand.Restart:
+        await stopAdapters();
+        await startAdapters();
+        break;
+
+      case Subcommand.Status:
+        await Promise.all(
+          appAdapters.map(async (adapter) => {
+            const running = await adapter.isRunning();
+            const label = running ? chalk.green("running") : chalk.dim("stopped");
+            log.print(`  ${adapter.name}: ${label}`);
+          }),
+        );
+        break;
+
+      case Subcommand.Logs:
+        for (const adapter of appAdapters) {
+          const logPath = adapter.logFile();
+          if (logPath && existsSync(logPath)) {
+            log.print(chalk.bold(`\n── ${adapter.name} (${logPath}) ──`));
+            log.print(readFileSync(logPath, "utf-8").split("\n").slice(-50).join("\n"));
+          } else {
+            log.print(chalk.dim(`  ${adapter.name}: no log file found`));
+          }
+        }
+        break;
+    }
+
+    return;
+  }
+
   log.info("\n  ⬡ Claude Swarm\n");
 
   const isGitRepo = existsSync(join(DEFAULT_ROOT_DIR, ".git"));
