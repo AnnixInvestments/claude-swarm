@@ -37,19 +37,22 @@ const stored = (p: string): string => {
   }
 };
 
-const depsHashFile = join(projectRoot, "node_modules", ".install-hash");
-if (!existsSync(join(projectRoot, "node_modules")) || stored(depsHashFile) !== hashDeps()) {
-  console.error("Installing dependencies...");
-  execSync("npm install --silent", { cwd: projectRoot, stdio: "inherit" });
-  writeFileSync(depsHashFile, hashDeps());
-}
+const srcDir = join(projectRoot, "src");
+if (existsSync(srcDir)) {
+  const depsHashFile = join(projectRoot, "node_modules", ".install-hash");
+  if (!existsSync(join(projectRoot, "node_modules")) || stored(depsHashFile) !== hashDeps()) {
+    console.error("Installing dependencies...");
+    execSync("npm install --silent", { cwd: projectRoot, stdio: "inherit" });
+    writeFileSync(depsHashFile, hashDeps());
+  }
 
-const buildHashFile = join(projectRoot, "dist", ".build-hash");
-const srcHash = hashSrc();
-if (!existsSync(join(projectRoot, "dist", "index.js")) || stored(buildHashFile) !== srcHash) {
-  console.error("Building...");
-  execSync("npm run build --silent", { cwd: projectRoot, stdio: "inherit" });
-  writeFileSync(buildHashFile, srcHash);
+  const buildHashFile = join(projectRoot, "dist", ".build-hash");
+  const srcHash = hashSrc();
+  if (!existsSync(join(projectRoot, "dist", "index.js")) || stored(buildHashFile) !== srcHash) {
+    console.error("Building...");
+    execSync("npm run build --silent", { cwd: projectRoot, stdio: "inherit" });
+    writeFileSync(buildHashFile, srcHash);
+  }
 }
 
 await import(pathToFileURL(join(projectRoot, "dist", "index.js")).href);
