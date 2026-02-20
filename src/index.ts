@@ -633,6 +633,8 @@ const SWARM_LINES = [
 
 const SINGLE_BEE = ["    ✻    ", "    |    ", "   ▟█▙   ", " ▐▛███▜▌ ", "▝▜█████▛▘", "  ▘▘ ▝▝  "];
 
+const BEE_COLORS = ["#A97FFF", "#A97FFF", "#A97FFF", "#E07B54", "#E07B54", "#E07B54"];
+
 function buildBeeRow(rowIdx: number, beeCount: number): string {
   if (rowIdx < 0 || rowIdx >= SINGLE_BEE.length || beeCount <= 0) {
     return " ".repeat(beeCount * 9);
@@ -683,7 +685,7 @@ function printHeader(): void {
     if (beeCount > 0) {
       const beeContent =
         beeRowIdx >= 0 && beeRowIdx < BEE_ROWS
-          ? chalk.bold.hex(BORDER_COLOR)(buildBeeRow(beeRowIdx, beeCount))
+          ? chalk.bold.hex(BEE_COLORS[beeRowIdx])(buildBeeRow(beeRowIdx, beeCount))
           : " ".repeat(beeCount * BEE_UNIT);
       beePart = " ".repeat(beeGap) + beeContent;
     }
