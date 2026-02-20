@@ -65,6 +65,10 @@ export class ProcessAdapter implements AppAdapter {
     }
   }
 
+  isStarting(): boolean {
+    return false;
+  }
+
   async isRunning(): Promise<boolean> {
     if (this.process !== null) {
       return true;
@@ -95,6 +99,14 @@ export class ProcessAdapter implements AppAdapter {
   }
 
   logFile(): string | null {
+    return null;
+  }
+
+  url(): string | null {
+    return null;
+  }
+
+  lastError(): string | null {
     return null;
   }
 }

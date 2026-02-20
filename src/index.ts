@@ -1,10 +1,17 @@
 #!/usr/bin/env node
 
 import { type ChildProcess, execSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { type Key, createInterface, emitKeypressEvents } from "node:readline";
 import { checkbox, confirm, input, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import type { AppAdapter } from "./adapters/index.js";
@@ -45,6 +52,7 @@ interface ManagedSession {
   status: "running" | "stopped";
   headless: boolean;
   task?: string;
+  pidFile?: string;
 }
 
 interface MenuChoice {
@@ -75,6 +83,7 @@ enum MainAction {
   Start = "start",
   Stop = "stop",
   Logs = "logs",
+  Shortcut = "shortcut",
   Refresh = "refresh",
   Quit = "quit",
 }
@@ -207,8 +216,89 @@ function addProject(project: ProjectConfig): void {
   persistProjectsConfig({ ...config, projects: updatedProjects });
 }
 
+function hasDesktopShortcut(project: ProjectConfig): boolean {
+  if (process.platform !== "win32") return true;
+  const nameLower = project.name.toLowerCase().replace(/[\s-_]/g, "");
+  const desktopHasMatch = (dir: string): boolean => {
+    if (!existsSync(dir)) return false;
+    try {
+      return readdirSync(dir).some((f) => {
+        if (!f.toLowerCase().endsWith(".lnk")) return false;
+        const stem = f.slice(0, -4).toLowerCase().replace(/[\s-_]/g, "");
+        return stem === nameLower;
+      });
+    } catch {
+      return false;
+    }
+  };
+  return desktopHasMatch(join(homedir(), "Desktop")) || desktopHasMatch("C:\\Mac\\Home\\Desktop");
+}
+
+function createDesktopShortcut(project: ProjectConfig): boolean {
+  if (process.platform !== "win32") return false;
+
+  try {
+    const nativeDesktop = join(homedir(), "Desktop");
+    const parallelsDesktop = "C:\\Mac\\Home\\Desktop";
+    const isParallels = existsSync(parallelsDesktop);
+
+
+    if (!existsSync(nativeDesktop)) {
+      mkdirSync(nativeDesktop, { recursive: true });
+    }
+
+
+    const swarmScript = join(project.path, "claude-swarm.ps1");
+    if (!existsSync(swarmScript)) {
+      log.warn(`No claude-swarm.ps1 found in ${project.path}`);
+      return false;
+    }
+
+
+    const safeName = project.name.replace(/[^a-zA-Z0-9-_]/g, "");
+    const wrapperPath = join(nativeDesktop, `${safeName}.ps1`);
+    writeFileSync(
+      wrapperPath,
+      `$env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH", "User")\r\n\r\nSet-Location "${project.path}"\r\n& ".\\claude-swarm.ps1"\r\n`,
+      "utf-8",
+    );
+
+
+    const lnkName = `${project.name}.lnk`;
+    const nativeLnk = join(nativeDesktop, lnkName);
+    const psPath = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+
+    const createScript = join(tmpdir(), `claude-swarm-mkshortcut-${Date.now()}.ps1`);
+    writeFileSync(
+      createScript,
+      `$WshShell = New-Object -ComObject WScript.Shell\r\n$s = $WshShell.CreateShortcut('${nativeLnk}')\r\n$s.TargetPath = '${psPath}'\r\n$s.Arguments = '-ExecutionPolicy Bypass -File ${wrapperPath}'\r\n$s.WorkingDirectory = '${project.path}'\r\n$s.IconLocation = '${psPath},0'\r\n$s.Description = 'Claude Swarm - ${project.name}'\r\n$s.Save()\r\n`,
+      "utf-8",
+    );
+    execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${createScript}"`, {
+      stdio: "pipe",
+    });
+    try {
+      unlinkSync(createScript);
+    } catch {}
+
+
+    if (isParallels) {
+      const macLnk = join(parallelsDesktop, lnkName);
+      const data = readFileSync(nativeLnk);
+      writeFileSync(macLnk, data);
+    }
+
+    return true;
+  } catch (err) {
+    log.error(`Failed to create shortcut: ${(err as Error).message}`);
+    return false;
+  }
+}
+
 async function selectProjectForSession(): Promise<ProjectConfig | null> {
   const config = localProjectsConfig();
+  const cwdMatch = config.projects.find((p) => p.path === DEFAULT_ROOT_DIR);
+  if (cwdMatch) return cwdMatch;
 
   const choices = [
     ...config.projects.map((p) => ({
@@ -262,6 +352,18 @@ async function selectProjectForSession(): Promise<ProjectConfig | null> {
 
     addProject(newProject);
     log.info(`Added project: ${newProject.name}`);
+
+    if (process.platform === "win32") {
+      const createShortcut = await confirm({
+        message: "Create a desktop shortcut for this project?",
+        default: true,
+      });
+      if (createShortcut) {
+        if (createDesktopShortcut(newProject)) {
+          log.info(`Desktop shortcut created for ${newProject.name}`);
+        }
+      }
+    }
 
     return newProject;
   }
@@ -414,7 +516,7 @@ function detectClaudeSessions(): Session[] {
         .split("\n")
         .filter((line) => line.toLowerCase().includes("claude") && !line.includes("claude-swarm"));
 
-      const winResult: Session[] = [];
+      const claudeProcesses: Array<{ processName: string; pid: number }> = [];
       for (const line of lines) {
         const match = line.match(/"([^"]+)","(\d+)"/);
         if (!match) continue;
@@ -424,25 +526,34 @@ function detectClaudeSessions(): Session[] {
         if (Number.isNaN(pid) || seenPids.has(pid)) continue;
         if (!processName.toLowerCase().includes("claude")) continue;
         seenPids.add(pid);
-
-        const hasConsole =
-          exec(
-            `powershell -Command "(Get-Process -Id ${pid} -ErrorAction SilentlyContinue).MainWindowHandle -ne 0"`,
-            { silent: true },
-          ).trim() === "True";
-
-        winResult.push({
-          pid,
-          name: `PID ${pid}`,
-          branch: "unknown",
-          project: "unknown",
-          status: "working",
-          lastActivity: "active",
-          tty: hasConsole ? "console" : null,
-          isOrphaned: !hasConsole,
-        });
+        claudeProcesses.push({ processName, pid });
       }
-      return winResult;
+
+      const pidsWithConsole = new Set<number>();
+      if (claudeProcesses.length > 0) {
+        const pidList = claudeProcesses.map((p) => p.pid).join(",");
+        const psOutput = exec(
+          `powershell -NoProfile -Command "${pidList} | ForEach-Object { $p = Get-Process -Id $_ -ErrorAction SilentlyContinue; if ($p -and $p.MainWindowHandle -ne 0) { $_ } }"`,
+          { silent: true },
+        );
+        for (const line of psOutput.split("\n")) {
+          const pid = Number.parseInt(line.trim(), 10);
+          if (!Number.isNaN(pid)) {
+            pidsWithConsole.add(pid);
+          }
+        }
+      }
+
+      return claudeProcesses.map(({ pid }) => ({
+        pid,
+        name: `PID ${pid}`,
+        branch: "unknown",
+        project: "unknown",
+        status: "working" as const,
+        lastActivity: "active",
+        tty: pidsWithConsole.has(pid) ? "console" : null,
+        isOrphaned: !pidsWithConsole.has(pid),
+      }));
     }
   } catch {
     return [];
@@ -506,7 +617,7 @@ function printHeader(): void {
   process.stdout.write("\x1b[2J\x1b[H");
   const width = boxContentWidth();
   const titleText = "  ⬡  C L A U D E   S W A R M";
-  const subtitle = "  parallel sessions · worktree isolation · dev server lifecycle";
+  const subtitle = `  ${currentProject.name} · parallel sessions · worktree isolation`;
   log.print(b.top(`┌${"─".repeat(width)}┐`));
   log.print(
     b.top("│") + b.top(titleText) + " ".repeat(Math.max(0, width - titleText.length)) + b.top("│"),
@@ -729,21 +840,24 @@ async function deleteBranch(branch: string): Promise<void> {
   }
 }
 
-async function startAdapters(): Promise<void> {
+async function startAdapters(quiet = false): Promise<void> {
   const hasRealAdapters = appAdapters.some((a) => !(a instanceof NullAdapter));
   if (!hasRealAdapters) {
-    log.print(
-      chalk.dim("  No app adapters configured. Add a .claude-swarm.json to configure dev servers."),
-    );
+    if (!quiet) {
+      log.print(
+        chalk.dim(
+          "  No app adapters configured. Add a .claude-swarm.json to configure dev servers.",
+        ),
+      );
+    }
     return;
   }
 
   await Promise.all(
     appAdapters.map(async (adapter) => {
-      log.print(`  Starting ${adapter.name}...`);
       try {
         await adapter.start();
-        log.print(chalk.green(`  ${adapter.name} started`));
+        if (!quiet) log.print(chalk.green(`  ${adapter.name} starting`));
       } catch (err) {
         log.print(chalk.red(`  Failed to start ${adapter.name}: ${(err as Error).message}`));
       }
@@ -1006,30 +1120,42 @@ async function spawnClaudeSession(options: SpawnOptions = {}): Promise<void> {
   let claudeCmd = "claude";
   if (headless) {
     claudeCmd = taskFile
-      ? `cat '${taskFile}' | claude --dangerously-skip-permissions`
-      : "claude --dangerously-skip-permissions";
+      ? `cat '${taskFile}' | claude -p --dangerously-skip-permissions`
+      : "claude -p --dangerously-skip-permissions";
   } else if (taskFile) {
     claudeCmd = `cat '${taskFile}' | claude`;
   }
 
   let sessionProcess: ChildProcess;
+  let pidFile: string | undefined;
 
   if (isWindows) {
-    let winCmd = "claude";
-    if (headless) {
-      winCmd = taskFile
-        ? `claude --dangerously-skip-permissions < "${taskFile}"`
-        : "claude --dangerously-skip-permissions";
-    } else if (taskFile) {
-      winCmd = `type "${taskFile}" | claude`;
-    }
-
+    const claudePath = exec("where claude.cmd", { silent: true }).split("\n")[0].trim();
     const hasWindowsTerminal = exec("where wt", { silent: true }) !== "";
 
+
+    let psClaudeCmd: string;
+    if (headless) {
+      psClaudeCmd = taskFile
+        ? `Get-Content '${taskFile}' | & '${claudePath}' -p --dangerously-skip-permissions`
+        : `& '${claudePath}' -p --dangerously-skip-permissions`;
+    } else if (taskFile) {
+      psClaudeCmd = `Get-Content '${taskFile}' | & '${claudePath}'`;
+    } else {
+      psClaudeCmd = `& '${claudePath}'`;
+    }
+
+
+    pidFile = join(tmpdir(), `claude-swarm-${sessionId}.pid`);
+    const scriptFile = join(tmpdir(), `claude-swarm-${sessionId}.ps1`);
+    writeFileSync(
+      scriptFile,
+      `$PID | Out-File -FilePath '${pidFile}' -NoNewline -Encoding ascii\r\n${psClaudeCmd}\r\n`,
+      "utf-8",
+    );
+
     if (hasWindowsTerminal) {
-      const claudePath = exec("where claude.cmd", { silent: true }).split("\n")[0].trim();
-      const fullWinCmd = winCmd.replace(/^claude/, `"${claudePath}"`);
-      const wtCmd = `wt -w -1 new-tab --title "Claude ${sessionCounter}" -d "${sessionDir}" ${fullWinCmd}`;
+      const wtCmd = `wt -w -1 new-tab --title "${sessionName} on ${branchName}" --suppressApplicationTitle -d "${sessionDir}" powershell -ExecutionPolicy Bypass -NoProfile -File "${scriptFile}"`;
       sessionProcess = spawn(wtCmd, [], {
         cwd: rootDir(),
         detached: true,
@@ -1037,11 +1163,15 @@ async function spawnClaudeSession(options: SpawnOptions = {}): Promise<void> {
         shell: true,
       });
     } else {
-      sessionProcess = spawn("cmd", ["/c", "start", "cmd", "/k", winCmd], {
-        cwd: sessionDir,
-        detached: true,
-        stdio: "ignore",
-      });
+      sessionProcess = spawn(
+        "powershell",
+        ["-ExecutionPolicy", "Bypass", "-NoProfile", "-File", scriptFile],
+        {
+          cwd: sessionDir,
+          detached: true,
+          stdio: "ignore",
+        },
+      );
     }
   } else {
     const terminalApp = process.env.TERM_PROGRAM === "iTerm.app" ? "iTerm" : "Terminal";
@@ -1112,6 +1242,7 @@ EOF`,
     status: "running",
     headless,
     task,
+    pidFile,
   };
 
   managedSessions.set(sessionId, session);
@@ -1139,14 +1270,41 @@ async function terminateSession(sessionId: string): Promise<void> {
     return;
   }
 
-  try {
-    if (session.process.pid) {
-      process.kill(session.process.pid, "SIGTERM");
+  let killed = false;
+
+
+  if (session.pidFile) {
+    try {
+      if (existsSync(session.pidFile)) {
+        const realPid = Number.parseInt(readFileSync(session.pidFile, "utf-8").trim(), 10);
+        if (!Number.isNaN(realPid)) {
+          killed = killExternalProcess(realPid, true);
+        }
+      }
+    } catch {
+
     }
-    session.status = "stopped";
+  
+    const scriptFile = session.pidFile.replace(/\.pid$/, ".ps1");
+    for (const f of [session.pidFile, scriptFile]) {
+      try {
+        unlinkSync(f);
+      } catch {
+
+      }
+    }
+  }
+
+
+  if (!killed && session.process.pid) {
+    killed = killExternalProcess(session.process.pid, true);
+  }
+
+  session.status = "stopped";
+  if (killed) {
     log.info(`${session.name} terminated.`);
-  } catch {
-    log.warn("Note: Session may need to be closed manually in its terminal.");
+  } else {
+    log.warn(`Could not terminate ${session.name}. Close its terminal tab manually.`);
   }
 
   if (session.worktreePath) {
@@ -1749,9 +1907,22 @@ async function showStatus(): Promise<void> {
     for (const adapter of appAdapters) {
       if (!(adapter instanceof NullAdapter)) {
         const running = await adapter.isRunning();
-        const statusText = running
-          ? chalk.green(`${adapter.name}: running`)
-          : chalk.dim(`${adapter.name}: stopped`);
+        const adapterUrl = adapter.url();
+        const error = adapter.lastError();
+        const urlSuffix =
+          running && adapterUrl
+            ? chalk.cyan(` ${adapterUrl}`) + chalk.dim(" (Ctrl+Click to open)")
+            : "";
+        let statusText: string;
+        if (error) {
+          statusText = chalk.red(`${adapter.name}: failed`) + chalk.dim(` (${error})`);
+        } else if (running) {
+          statusText = chalk.green(`${adapter.name}: running`) + urlSuffix;
+        } else if (adapter.isStarting()) {
+          statusText = chalk.yellow(`${adapter.name}: starting...`);
+        } else {
+          statusText = chalk.dim(`${adapter.name}: stopped`);
+        }
         printBoxLine(statusText);
       }
     }
@@ -1786,6 +1957,7 @@ async function rawSelect<T extends string>(
   message: string,
   choices: Array<{ name: string; value: T; key?: string }>,
   cancelValue?: T,
+  onRefresh?: (menuLines: number) => Promise<void>,
 ): Promise<T> {
   if (!process.stdin.isTTY || typeof process.stdin.setRawMode !== "function") {
     const result = await select({ message, choices, pageSize: 20 });
@@ -1794,6 +1966,7 @@ async function rawSelect<T extends string>(
 
   return new Promise((resolve) => {
     let selectedIndex = 0;
+    let refreshTimer: ReturnType<typeof setInterval> | null = null;
     const keyMap = new Map(
       choices.flatMap((c, i) => (c.key ? [[c.key.toLowerCase(), i] as [string, number]] : [])),
     );
@@ -1807,24 +1980,22 @@ async function rawSelect<T extends string>(
       log.print(`${prefix}${text}`);
     }
 
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    emitKeypressEvents(process.stdin, rl);
-
     try {
       process.stdin.setRawMode(true);
     } catch {
-      rl.close();
       resolve(choices[selectedIndex].value);
       return;
     }
+    process.stdin.resume();
 
     process.stdout.write("\x1b[?25l");
 
     const cleanup = () => {
+      if (refreshTimer) clearInterval(refreshTimer);
       process.stdout.write("\x1b[?25h");
+      process.stdin.removeListener("data", handler);
       process.stdin.setRawMode(false);
-      process.stdin.removeAllListeners("keypress");
-      rl.close();
+      process.stdin.pause();
     };
 
     const clearMenu = () => {
@@ -1832,29 +2003,45 @@ async function rawSelect<T extends string>(
       process.stdout.write(`\x1b[${lines}A\r\x1b[0J`);
     };
 
-    const handler = (_str: string | undefined, key: Key) => {
-      if (!key) return;
+    if (onRefresh) {
+      refreshTimer = setInterval(async () => {
+        if (selectedIndex !== 0) return;
+        try {
+          await onRefresh(choices.length);
+        } catch {}
+      }, 10000);
+    }
 
-      if (key.name === "up") {
-        selectedIndex = (selectedIndex - 1 + choices.length) % choices.length;
-        renderMenu(message, choices, selectedIndex);
+    let escBuf: Buffer = Buffer.alloc(0);
+    let escTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const processKey = (buf: Buffer) => {
+      if (buf.length === 3 && buf[0] === 0x1b && buf[1] === 0x5b) {
+        if (buf[2] === 0x41) {
+          selectedIndex = (selectedIndex - 1 + choices.length) % choices.length;
+          renderMenu(message, choices, selectedIndex);
+          return;
+        }
+        if (buf[2] === 0x42) {
+          selectedIndex = (selectedIndex + 1) % choices.length;
+          renderMenu(message, choices, selectedIndex);
+          return;
+        }
         return;
       }
 
-      if (key.name === "down") {
-        selectedIndex = (selectedIndex + 1) % choices.length;
-        renderMenu(message, choices, selectedIndex);
-        return;
-      }
+      if (buf.length >= 2 && buf[0] === 0x1b) return;
 
-      if (key.name === "return") {
+      const byte = buf[0];
+
+      if (byte === 0x0d) {
         clearMenu();
         cleanup();
         resolve(choices[selectedIndex].value);
         return;
       }
 
-      if (key.name === "escape") {
+      if (byte === 0x1b) {
         clearMenu();
         cleanup();
         if (cancelValue !== undefined) {
@@ -1868,13 +2055,13 @@ async function rawSelect<T extends string>(
         return;
       }
 
-      if (key.ctrl && key.name === "c") {
+      if (byte === 0x03) {
         clearMenu();
         cleanup();
         process.exit(0);
       }
 
-      const pressed = (key.name ?? key.sequence ?? "").toLowerCase();
+      const pressed = String.fromCharCode(byte).toLowerCase();
       const matchIndex = keyMap.get(pressed);
       if (matchIndex !== undefined) {
         clearMenu();
@@ -1884,7 +2071,33 @@ async function rawSelect<T extends string>(
       }
     };
 
-    process.stdin.on("keypress", handler);
+    const handler = (data: Buffer) => {
+      if (data.length === 0) return;
+
+      if (escTimer) {
+        clearTimeout(escTimer);
+        escTimer = null;
+        const combined = Buffer.concat([escBuf, data]);
+        escBuf = Buffer.alloc(0);
+        processKey(combined);
+        return;
+      }
+
+      if (data[0] === 0x1b && data.length === 1) {
+        escBuf = data;
+        escTimer = setTimeout(() => {
+          escTimer = null;
+          const buf = escBuf;
+          escBuf = Buffer.alloc(0);
+          processKey(buf);
+        }, 50);
+        return;
+      }
+
+      processKey(data);
+    };
+
+    process.stdin.on("data", handler);
   });
 }
 
@@ -1896,8 +2109,12 @@ async function selectWithEscape<T extends string>(
   return rawSelect(message, choices, cancelValue);
 }
 
-async function selectWithShortcuts(message: string, choices: MenuChoice[]): Promise<string> {
-  return rawSelect(message, choices);
+async function selectWithShortcuts(
+  message: string,
+  choices: MenuChoice[],
+  onRefresh?: (menuLines: number) => Promise<void>,
+): Promise<string> {
+  return rawSelect(message, choices, undefined, onRefresh);
 }
 
 async function showAppLogs(): Promise<void> {
@@ -1924,35 +2141,66 @@ async function showAppLogs(): Promise<void> {
 
     const tail =
       process.platform === "win32"
-        ? spawn("powershell", ["-Command", `Get-Content -Path '${logPath}' -Wait`], {
+        ? spawn("powershell", ["-NoProfile", "-Command", `Get-Content -Path '${logPath}' -Wait`], {
             stdio: ["ignore", "pipe", "pipe"],
           })
         : spawn("tail", ["-f", logPath], { stdio: ["ignore", "pipe", "pipe"] });
-    tail.stdout?.pipe(process.stdout);
-    tail.stderr?.pipe(process.stderr);
 
-    const stopTail = () => tail.kill("SIGTERM");
+    const writeOut = (chunk: Buffer) => {
+      try {
+        process.stdout.write(chunk);
+      } catch {}
+    };
+    tail.stdout?.on("data", writeOut);
+    tail.stderr?.on("data", writeOut);
+
+    const cleanup = () => {
+      tail.stdout?.removeListener("data", writeOut);
+      tail.stderr?.removeListener("data", writeOut);
+      try {
+        if (process.platform === "win32" && tail.pid) {
+          execSync(`taskkill /PID ${tail.pid} /T /F`, { stdio: "pipe" });
+        } else {
+          tail.kill("SIGTERM");
+        }
+      } catch {}
+      try {
+        tail.stdout?.destroy();
+        tail.stderr?.destroy();
+      } catch {}
+    };
 
     if (process.stdin.isTTY) {
+      try {
+        process.stdin.setRawMode(true);
+      } catch {
+        cleanup();
+        return;
+      }
       process.stdin.resume();
-      emitKeypressEvents(process.stdin);
-      process.stdin.setRawMode(true);
-      process.stdin.on("keypress", (_str, key) => {
-        if (!key) return;
-        if (key.name === "q" || key.name === "escape" || (key.ctrl && key.name === "c")) {
-          stopTail();
-        }
+
+      await new Promise<void>((resolve) => {
+        const handler = (data: Buffer) => {
+          const byte = data[0];
+          const isQ = byte === 0x71 || byte === 0x51;
+          const isEscape = byte === 0x1b && data.length === 1;
+          const isCtrlC = byte === 0x03;
+          if (isQ || isEscape || isCtrlC) {
+            process.stdin.removeListener("data", handler);
+            process.stdin.setRawMode(false);
+            process.stdin.pause();
+            cleanup();
+            resolve();
+          }
+        };
+
+        process.stdin.on("data", handler);
+      });
+    } else {
+      await new Promise<void>((resolve) => {
+        tail.on("close", () => resolve());
       });
     }
-
-    await new Promise<void>((resolve) => {
-      tail.on("close", () => resolve());
-    });
-
-    if (process.stdin.isTTY) {
-      process.stdin.setRawMode(false);
-    }
-    process.stdin.removeAllListeners("keypress");
 
     log.print("");
   };
@@ -2054,6 +2302,14 @@ async function mainMenu(): Promise<void> {
       });
     }
 
+    if (process.platform === "win32" && !hasDesktopShortcut(currentProject)) {
+      choices.push({
+        name: `${padLabel("Create desktop shortcut", 28)}${chalk.cyan("[d]")}`,
+        value: MainAction.Shortcut,
+        key: "d",
+      });
+    }
+
     choices.push({
       name: `${padLabel("Refresh", 28)}${chalk.cyan("[r]")}`,
       value: MainAction.Refresh,
@@ -2066,7 +2322,40 @@ async function mainMenu(): Promise<void> {
       key: "q",
     });
 
-    const action = await selectWithShortcuts("What would you like to do?", choices);
+    const realAdapters = appAdapters.filter((a) => !(a instanceof NullAdapter));
+    const refreshAppStatus = realAdapters.length > 0
+      ? async (menuLines: number) => {
+          const width = boxContentWidth();
+          const linesUp = menuLines + 1 + 1 + 1 + 1 + realAdapters.length;
+          process.stdout.write(`\x1b[s\x1b[${linesUp}A`);
+          for (const adapter of realAdapters) {
+            const running = await adapter.isRunning();
+            const adapterUrl = adapter.url();
+            const error = adapter.lastError();
+            const urlSuffix =
+              running && adapterUrl
+                ? chalk.cyan(` ${adapterUrl}`) + chalk.dim(" (Ctrl+Click to open)")
+                : "";
+            let statusText: string;
+            if (error) {
+              statusText = chalk.red(`${adapter.name}: failed`) + chalk.dim(` (${error})`);
+            } else if (running) {
+              statusText = chalk.green(`${adapter.name}: running`) + urlSuffix;
+            } else if (adapter.isStarting()) {
+              statusText = chalk.yellow(`${adapter.name}: starting...`);
+            } else {
+              statusText = chalk.dim(`${adapter.name}: stopped`);
+            }
+            const padded = `  ${statusText}`;
+            const stripped = padded.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+            const pad = Math.max(0, width - stripped.length);
+            process.stdout.write(`\r${b.content("│")}${padded}${" ".repeat(pad)}${b.content("│")}\x1b[1B`);
+          }
+          process.stdout.write("\x1b[u");
+        }
+      : undefined;
+
+    const action = await selectWithShortcuts("What would you like to do?", choices, refreshAppStatus);
 
     if (action === MainAction.Branches) {
       await showBranchMenu();
@@ -2075,21 +2364,30 @@ async function mainMenu(): Promise<void> {
     } else if (action === MainAction.Pull) {
       await pullChanges();
     } else if (action === MainAction.Start) {
-      await startAdapters();
+      log.print(chalk.yellow("  Starting apps..."));
+      await startAdapters(true);
     } else if (action === MainAction.Stop) {
       await stopAdapters();
     } else if (action === MainAction.Logs) {
       await showAppLogs();
+    } else if (action === MainAction.Shortcut) {
+      if (createDesktopShortcut(currentProject)) {
+        log.info(`Desktop shortcut created for ${currentProject.name}`);
+      }
     } else if (action === MainAction.Refresh) {
     } else if (action === MainAction.Quit) {
       const anyRunning = await isAnyAdapterRunning();
       if (anyRunning) {
-        const confirmQuit = await confirm({
-          message: "Apps are still running. Stop them before quitting?",
-          default: true,
-        });
-        if (confirmQuit) {
+        if (process.platform === "win32") {
           await stopAdapters();
+        } else {
+          const confirmQuit = await confirm({
+            message: "Apps are still running. Stop them before quitting?",
+            default: true,
+          });
+          if (confirmQuit) {
+            await stopAdapters();
+          }
         }
       }
       process.stdout.write("\r\n");

@@ -13,7 +13,19 @@ export class NullAdapter implements AppAdapter {
     return false;
   }
 
+  isStarting(): boolean {
+    return false;
+  }
+
   logFile(): string | null {
+    return null;
+  }
+
+  url(): string | null {
+    return null;
+  }
+
+  lastError(): string | null {
     return null;
   }
 }

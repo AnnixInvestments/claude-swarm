@@ -54,6 +54,10 @@ export abstract class DevServerAdapter implements AppAdapter {
     } catch {}
   }
 
+  isStarting(): boolean {
+    return false;
+  }
+
   async isRunning(): Promise<boolean> {
     if (process.platform === "win32") {
       try {
@@ -78,6 +82,14 @@ export abstract class DevServerAdapter implements AppAdapter {
   }
 
   logFile(): string | null {
+    return null;
+  }
+
+  url(): string | null {
+    return `http://localhost:${this.port}`;
+  }
+
+  lastError(): string | null {
     return null;
   }
 }

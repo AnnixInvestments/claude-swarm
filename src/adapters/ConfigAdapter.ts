@@ -1,5 +1,5 @@
-import { execSync, spawn } from "node:child_process";
-import { closeSync, mkdirSync, openSync, readSync, statSync } from "node:fs";
+import { type ChildProcess, execSync, spawn } from "node:child_process";
+import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { AppAdapter } from "./AppAdapter.js";
 
@@ -34,6 +34,10 @@ export class ConfigAdapter implements AppAdapter {
   private readonly config: AppAdapterConfig;
   private readonly cwd: string;
   private pid: number | undefined;
+  private proc: ChildProcess | null = null;
+  private running = false;
+  private started = false;
+  private startError: string | null = null;
 
   constructor(config: AppAdapterConfig, cwd: string) {
     this.name = config.name;
@@ -45,89 +49,85 @@ export class ConfigAdapter implements AppAdapter {
     return join(this.cwd, "logs", `${this.name}.log`);
   }
 
+  url(): string | null {
+    if (this.config.health) {
+      try {
+        const u = new URL(this.config.health);
+        return `${u.protocol}//${u.host}`;
+      } catch {}
+    }
+    if (this.config.port) {
+      return `http://localhost:${this.config.port}`;
+    }
+    return null;
+  }
+
+  lastError(): string | null {
+    return this.startError;
+  }
+
   async start(): Promise<void> {
     await this.kill();
+    this.killPort();
+    this.started = true;
+    this.startError = null;
+
     const logPath = this.logFile();
     mkdirSync(dirname(logPath), { recursive: true });
-    const logFd = openSync(logPath, "a");
+    const logStream = createWriteStream(logPath, { flags: "w" });
     const startCmd = wrapForShell(resolveCommand(this.config.start));
-
-    if (!this.config.readyPattern) {
-      const proc = spawn(startCmd, [], {
-        cwd: this.cwd,
-        stdio: ["ignore", logFd, logFd],
-        detached: !isWindows,
-        shell: true,
-        windowsHide: true,
-      });
-      this.pid = proc.pid;
-      proc.unref();
-      closeSync(logFd);
-      return;
-    }
-
-    const pattern = new RegExp(this.config.readyPattern);
-    const timeoutMs = 120000;
-
-    let initialSize = 0;
-    try {
-      initialSize = statSync(logPath).size;
-    } catch {}
 
     const proc = spawn(startCmd, [], {
       cwd: this.cwd,
-      stdio: ["ignore", logFd, logFd],
+      stdio: ["ignore", "pipe", "pipe"],
       detached: !isWindows,
       shell: true,
       windowsHide: true,
     });
     this.pid = proc.pid;
-    proc.unref();
-    closeSync(logFd);
+    this.proc = proc;
 
-    await new Promise<void>((resolve, reject) => {
-      let settled = false;
-      let offset = initialSize;
-      let outputBuffer = "";
-      const buf = Buffer.alloc(65536);
+    if (!this.config.readyPattern) {
+      proc.stdout?.pipe(logStream);
+      proc.stderr?.pipe(logStream);
+      this.running = true;
+      this.registerInSwarm();
 
-      const finish = (err?: Error) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        clearInterval(interval);
-        if (err) reject(err);
-        else resolve();
-      };
-
-      const checkLog = () => {
-        try {
-          const fd = openSync(logPath, "r");
-          let bytesRead = readSync(fd, buf, 0, buf.length, offset);
-          while (bytesRead > 0) {
-            outputBuffer += buf.subarray(0, bytesRead).toString();
-            offset += bytesRead;
-            bytesRead = readSync(fd, buf, 0, buf.length, offset);
-          }
-          closeSync(fd);
-          if (pattern.test(outputBuffer)) finish();
-        } catch {}
-      };
-
-      const interval = setInterval(checkLog, 100);
-
-      proc.on("exit", (code) => {
-        if (!settled) {
-          finish(new Error(`${this.name} exited before becoming ready (exit code: ${code})`));
-        }
+      proc.on("exit", () => {
+        this.running = false;
+        this.proc = null;
+        this.deregisterFromSwarm();
       });
+      return;
+    }
 
-      const timer = setTimeout(
-        () => finish(new Error(`${this.name} did not become ready within ${timeoutMs / 1000}s`)),
-        timeoutMs,
-      );
+    const pattern = new RegExp(this.config.readyPattern);
+    const stripAnsi = (str: string) =>
+      str.replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[A-Za-z]`, "g"), "");
+    let outputBuffer = "";
 
-      checkLog();
+    const onData = (chunk: Buffer) => {
+      logStream.write(chunk);
+      if (this.running) return;
+
+      outputBuffer += chunk.toString();
+      if (pattern.test(stripAnsi(outputBuffer))) {
+        this.running = true;
+        outputBuffer = "";
+        this.registerInSwarm();
+      }
+    };
+
+    proc.stdout?.on("data", onData);
+    proc.stderr?.on("data", onData);
+
+    proc.on("exit", (code) => {
+      if (!this.running) {
+        this.startError = `${this.name} exited before becoming ready (exit code: ${code})`;
+      }
+      this.running = false;
+      this.proc = null;
+      this.deregisterFromSwarm();
     });
   }
 
@@ -163,14 +163,28 @@ export class ConfigAdapter implements AppAdapter {
     this.killGroup("SIGKILL");
   }
 
+  isStarting(): boolean {
+    return this.proc !== null && !this.running;
+  }
+
   async isRunning(): Promise<boolean> {
+    if (this.running) return true;
+    if (!this.started) return false;
+
+    const detected = await this.detectRunning();
+    if (detected) {
+      this.running = true;
+      this.registerInSwarm();
+    }
+    return detected;
+  }
+
+  private async detectRunning(): Promise<boolean> {
     if (this.config.health) {
       try {
         const res = await fetch(this.config.health, { signal: AbortSignal.timeout(3000) });
         if (res.ok) return true;
-        // Non-2xx but got a response — server is up, fall through to port/pid check
       } catch {
-        // Connection refused / timeout — server is down
         return false;
       }
     }
@@ -221,7 +235,74 @@ export class ConfigAdapter implements AppAdapter {
     return false;
   }
 
+  private registryPath(): string {
+    return join(this.cwd, ".claude-swarm", "registry.json");
+  }
+
+  private loadRegistry(): Record<string, unknown> {
+    const regPath = this.registryPath();
+    if (!existsSync(regPath)) return {};
+    try {
+      return JSON.parse(readFileSync(regPath, "utf-8")) as Record<string, unknown>;
+    } catch {
+      return {};
+    }
+  }
+
+  private saveRegistry(registry: Record<string, unknown>): void {
+    const regPath = this.registryPath();
+    mkdirSync(dirname(regPath), { recursive: true });
+    writeFileSync(regPath, JSON.stringify(registry, null, 2), "utf-8");
+  }
+
+  private registerInSwarm(): void {
+    try {
+      const registry = this.loadRegistry();
+      registry[this.name] = {
+        status: "running",
+        pid: this.pid ?? null,
+        port: this.config.port ?? null,
+        log: this.logFile(),
+        project: this.cwd,
+        health: this.config.health ?? (this.config.port ? `http://localhost:${this.config.port}` : null),
+        startedAt: new Date().toISOString(),
+        stoppedAt: null,
+      };
+      this.saveRegistry(registry);
+    } catch {}
+  }
+
+  private deregisterFromSwarm(): void {
+    try {
+      const registry = this.loadRegistry();
+      const entry = registry[this.name] as Record<string, unknown> | undefined;
+      if (entry) {
+        entry.status = "stopped";
+        entry.stoppedAt = new Date().toISOString();
+        entry.pid = null;
+        this.saveRegistry(registry);
+      }
+    } catch {}
+  }
+
+  private killPort(): void {
+    if (!this.config.port) return;
+    try {
+      if (process.platform === "win32") {
+        execSync(
+          `powershell -NoProfile -Command "$conn = Get-NetTCPConnection -LocalPort ${this.config.port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($conn) { Stop-Process -Id $conn.OwningProcess -Force -ErrorAction SilentlyContinue }"`,
+          { stdio: "pipe" },
+        );
+      } else {
+        execSync(`lsof -ti :${this.config.port} | xargs kill -9 2>/dev/null`, { stdio: "pipe" });
+      }
+    } catch {}
+  }
+
   private killGroup(signal: NodeJS.Signals): void {
+    this.running = false;
+    this.proc = null;
+
     if (process.platform === "win32") {
       if (this.pid !== undefined) {
         try {

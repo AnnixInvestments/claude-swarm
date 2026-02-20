@@ -24,4 +24,4 @@ if ($needsInstall) {
   pnpm install
   Compute-Hash | Out-File -FilePath $hashFile -NoNewline -Encoding utf8
 }
-pnpm claude-swarm
+node node_modules\@annix\claude-swarm\dist\bin.js
