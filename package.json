@@ -1,6 +1,6 @@
 {
   "name": "@annix/claude-swarm",
-  "version": "0.1.6",
+  "version": "0.1.8",
   "description": "Manage multiple parallel Claude CLI sessions with worktree isolation and dev server lifecycle management",
   "keywords": [
     "claude",
@@ -24,7 +24,9 @@
   "files": [
     "dist",
     "run.sh",
-    "run.ps1"
+    "run.ps1",
+    "timer.sh",
+    "timer.ps1"
   ],
   "scripts": {
     "build": "tsc",

@@ -224,7 +224,10 @@ function hasDesktopShortcut(project: ProjectConfig): boolean {
     try {
       return readdirSync(dir).some((f) => {
         if (!f.toLowerCase().endsWith(".lnk")) return false;
-        const stem = f.slice(0, -4).toLowerCase().replace(/[\s-_]/g, "");
+        const stem = f
+          .slice(0, -4)
+          .toLowerCase()
+          .replace(/[\s-_]/g, "");
         return stem === nameLower;
       });
     } catch {
@@ -242,18 +245,15 @@ function createDesktopShortcut(project: ProjectConfig): boolean {
     const parallelsDesktop = "C:\\Mac\\Home\\Desktop";
     const isParallels = existsSync(parallelsDesktop);
 
-
     if (!existsSync(nativeDesktop)) {
       mkdirSync(nativeDesktop, { recursive: true });
     }
-
 
     const swarmScript = join(project.path, "claude-swarm.ps1");
     if (!existsSync(swarmScript)) {
       log.warn(`No claude-swarm.ps1 found in ${project.path}`);
       return false;
     }
-
 
     const safeName = project.name.replace(/[^a-zA-Z0-9-_]/g, "");
     const wrapperPath = join(nativeDesktop, `${safeName}.ps1`);
@@ -262,7 +262,6 @@ function createDesktopShortcut(project: ProjectConfig): boolean {
       `$env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH", "User")\r\n\r\nSet-Location "${project.path}"\r\n& ".\\claude-swarm.ps1"\r\n`,
       "utf-8",
     );
-
 
     const lnkName = `${project.name}.lnk`;
     const nativeLnk = join(nativeDesktop, lnkName);
@@ -280,7 +279,6 @@ function createDesktopShortcut(project: ProjectConfig): boolean {
     try {
       unlinkSync(createScript);
     } catch {}
-
 
     if (isParallels) {
       const macLnk = join(parallelsDesktop, lnkName);
@@ -1133,7 +1131,6 @@ async function spawnClaudeSession(options: SpawnOptions = {}): Promise<void> {
     const claudePath = exec("where claude.cmd", { silent: true }).split("\n")[0].trim();
     const hasWindowsTerminal = exec("where wt", { silent: true }) !== "";
 
-
     let psClaudeCmd: string;
     if (headless) {
       psClaudeCmd = taskFile
@@ -1144,7 +1141,6 @@ async function spawnClaudeSession(options: SpawnOptions = {}): Promise<void> {
     } else {
       psClaudeCmd = `& '${claudePath}'`;
     }
-
 
     pidFile = join(tmpdir(), `claude-swarm-${sessionId}.pid`);
     const scriptFile = join(tmpdir(), `claude-swarm-${sessionId}.ps1`);
@@ -1175,7 +1171,7 @@ async function spawnClaudeSession(options: SpawnOptions = {}): Promise<void> {
     }
   } else {
     const terminalApp = process.env.TERM_PROGRAM === "iTerm.app" ? "iTerm" : "Terminal";
-    const shellCmd = `cd "${sessionDir}" && ${claudeCmd}`;
+    const shellCmd = `cd "${sessionDir}" && ${claudeCmd}; claude --dangerously-skip-permissions`;
     const escapeForAppleScript = (cmd: string) => cmd.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
     const escapedShellCmd = escapeForAppleScript(shellCmd);
 
@@ -1272,7 +1268,6 @@ async function terminateSession(sessionId: string): Promise<void> {
 
   let killed = false;
 
-
   if (session.pidFile) {
     try {
       if (existsSync(session.pidFile)) {
@@ -1281,20 +1276,15 @@ async function terminateSession(sessionId: string): Promise<void> {
           killed = killExternalProcess(realPid, true);
         }
       }
-    } catch {
+    } catch {}
 
-    }
-  
     const scriptFile = session.pidFile.replace(/\.pid$/, ".ps1");
     for (const f of [session.pidFile, scriptFile]) {
       try {
         unlinkSync(f);
-      } catch {
-
-      }
+      } catch {}
     }
   }
-
 
   if (!killed && session.process.pid) {
     killed = killExternalProcess(session.process.pid, true);
@@ -2323,39 +2313,49 @@ async function mainMenu(): Promise<void> {
     });
 
     const realAdapters = appAdapters.filter((a) => !(a instanceof NullAdapter));
-    const refreshAppStatus = realAdapters.length > 0
-      ? async (menuLines: number) => {
-          const width = boxContentWidth();
-          const linesUp = menuLines + 1 + 1 + 1 + 1 + realAdapters.length;
-          process.stdout.write(`\x1b[s\x1b[${linesUp}A`);
-          for (const adapter of realAdapters) {
-            const running = await adapter.isRunning();
-            const adapterUrl = adapter.url();
-            const error = adapter.lastError();
-            const urlSuffix =
-              running && adapterUrl
-                ? chalk.cyan(` ${adapterUrl}`) + chalk.dim(" (Ctrl+Click to open)")
-                : "";
-            let statusText: string;
-            if (error) {
-              statusText = chalk.red(`${adapter.name}: failed`) + chalk.dim(` (${error})`);
-            } else if (running) {
-              statusText = chalk.green(`${adapter.name}: running`) + urlSuffix;
-            } else if (adapter.isStarting()) {
-              statusText = chalk.yellow(`${adapter.name}: starting...`);
-            } else {
-              statusText = chalk.dim(`${adapter.name}: stopped`);
+    const refreshAppStatus =
+      realAdapters.length > 0
+        ? async (menuLines: number) => {
+            const width = boxContentWidth();
+            const linesUp = menuLines + 1 + 1 + 1 + 1 + realAdapters.length;
+            process.stdout.write(`\x1b[s\x1b[${linesUp}A`);
+            for (const adapter of realAdapters) {
+              const running = await adapter.isRunning();
+              const adapterUrl = adapter.url();
+              const error = adapter.lastError();
+              const urlSuffix =
+                running && adapterUrl
+                  ? chalk.cyan(` ${adapterUrl}`) + chalk.dim(" (Ctrl+Click to open)")
+                  : "";
+              let statusText: string;
+              if (error) {
+                statusText = chalk.red(`${adapter.name}: failed`) + chalk.dim(` (${error})`);
+              } else if (running) {
+                statusText = chalk.green(`${adapter.name}: running`) + urlSuffix;
+              } else if (adapter.isStarting()) {
+                statusText = chalk.yellow(`${adapter.name}: starting...`);
+              } else {
+                statusText = chalk.dim(`${adapter.name}: stopped`);
+              }
+              const padded = `  ${statusText}`;
+              const stripped = padded.replace(
+                new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[A-Za-z]`, "g"),
+                "",
+              );
+              const pad = Math.max(0, width - stripped.length);
+              process.stdout.write(
+                `\r${b.content("│")}${padded}${" ".repeat(pad)}${b.content("│")}\x1b[1B`,
+              );
             }
-            const padded = `  ${statusText}`;
-            const stripped = padded.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
-            const pad = Math.max(0, width - stripped.length);
-            process.stdout.write(`\r${b.content("│")}${padded}${" ".repeat(pad)}${b.content("│")}\x1b[1B`);
+            process.stdout.write("\x1b[u");
           }
-          process.stdout.write("\x1b[u");
-        }
-      : undefined;
+        : undefined;
 
-    const action = await selectWithShortcuts("What would you like to do?", choices, refreshAppStatus);
+    const action = await selectWithShortcuts(
+      "What would you like to do?",
+      choices,
+      refreshAppStatus,
+    );
 
     if (action === MainAction.Branches) {
       await showBranchMenu();

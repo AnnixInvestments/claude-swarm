@@ -264,7 +264,8 @@ export class ConfigAdapter implements AppAdapter {
         port: this.config.port ?? null,
         log: this.logFile(),
         project: this.cwd,
-        health: this.config.health ?? (this.config.port ? `http://localhost:${this.config.port}` : null),
+        health:
+          this.config.health ?? (this.config.port ? `http://localhost:${this.config.port}` : null),
         startedAt: new Date().toISOString(),
         stoppedAt: null,
       };
