@@ -644,7 +644,7 @@ function printHeader(): void {
   process.stdout.write("\x1b[2J\x1b[H");
   const width = boxContentWidth();
   const versionTag = `v${VERSION}`;
-  const subtitle = `  ${currentProject.name} · worktree isolation · ${versionTag}`;
+  const subtitle = `  ${currentProject.name} · worktree isolation · parallel sessions · dev lifecycle · branch management · ${versionTag}`;
 
   const TEXT_WIDTH = 49;
   const BEE_UNIT = 9;
