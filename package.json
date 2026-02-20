@@ -1,6 +1,6 @@
 {
   "name": "@annix/claude-swarm",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Manage multiple parallel Claude CLI sessions with worktree isolation and dev server lifecycle management",
   "keywords": [
     "claude",

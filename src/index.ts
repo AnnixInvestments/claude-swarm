@@ -20,6 +20,10 @@ import { loadProjectsConfig, loadSwarmConfig, saveProjectsConfig } from "./confi
 import type { ProjectConfig, ProjectsConfig } from "./config.js";
 import { log } from "./log.js";
 
+const { version: VERSION } = JSON.parse(
+  readFileSync(new URL("../package.json", import.meta.url), "utf-8"),
+) as { version: string };
+
 interface Branch {
   name: string;
   isLocal: boolean;
@@ -611,16 +615,86 @@ const b = {
   footer: (s: string) => chalk.bold.hex(BORDER_COLOR)(s),
 };
 
+const CLAUDE_LINES = [
+  " ██████ ██       █████  ██    ██ ██████  ███████ ",
+  "██      ██      ██   ██ ██    ██ ██   ██ ██      ",
+  "██      ██      ███████ ██    ██ ██   ██ █████   ",
+  "██      ██      ██   ██ ██    ██ ██   ██ ██      ",
+  " ██████ ███████ ██   ██  ██████  ██████  ███████ ",
+];
+
+const SWARM_LINES = [
+  "███████ ██     ██  █████  ██████  ███    ███ ",
+  "██      ██     ██ ██   ██ ██   ██ ████  ████ ",
+  "███████ ██  █  ██ ███████ ██████  ██ ████ ██ ",
+  "     ██ ██ ███ ██ ██   ██ ██   ██ ██  ██  ██ ",
+  "███████  ███ ███  ██   ██ ██   ██ ██      ██ ",
+];
+
+const SINGLE_BEE = ["    ✻    ", "    |    ", "   ▟█▙   ", " ▐▛███▜▌ ", "▝▜█████▛▘", "  ▘▘ ▝▝  "];
+
+function buildBeeRow(rowIdx: number, beeCount: number): string {
+  if (rowIdx < 0 || rowIdx >= SINGLE_BEE.length || beeCount <= 0) {
+    return " ".repeat(beeCount * 9);
+  }
+  return SINGLE_BEE[rowIdx].repeat(beeCount);
+}
+
 function printHeader(): void {
   process.stdout.write("\x1b[2J\x1b[H");
   const width = boxContentWidth();
-  const titleText = "  ⬡  C L A U D E   S W A R M";
-  const subtitle = `  ${currentProject.name} · parallel sessions · worktree isolation`;
+  const versionTag = `v${VERSION}`;
+  const subtitle = `  ${currentProject.name} · worktree isolation · ${versionTag}`;
+
+  const TEXT_WIDTH = 49;
+  const BEE_UNIT = 9;
+  const BEE_ROWS = SINGLE_BEE.length;
+  const indent = 2;
+  const beeGap = 3;
+
   log.print(b.top(`┌${"─".repeat(width)}┐`));
-  log.print(
-    b.top("│") + b.top(titleText) + " ".repeat(Math.max(0, width - titleText.length)) + b.top("│"),
-  );
-  log.print(b.top("│") + chalk.dim(subtitle.padEnd(width)) + b.top("│"));
+
+  if (width < indent + TEXT_WIDTH + 2) {
+    log.print(b.top("│") + " ".repeat(width) + b.top("│"));
+    log.print(
+      b.top("│") + chalk.bold.hex(BORDER_COLOR)("  CLAUDE SWARM".padEnd(width)) + b.top("│"),
+    );
+    log.print(b.top("│") + " ".repeat(width) + b.top("│"));
+    const subtitleFallback =
+      subtitle.length > width ? subtitle.slice(0, width) : subtitle.padEnd(width);
+    log.print(b.top("│") + chalk.dim(subtitleFallback) + b.top("│"));
+    log.print(b.divider(`├${"─".repeat(width)}┤`));
+    return;
+  }
+
+  const beeCount = Math.max(0, Math.floor((width - indent - TEXT_WIDTH - beeGap) / BEE_UNIT));
+  const ALL_LINES = [...CLAUDE_LINES, "".padEnd(TEXT_WIDTH), ...SWARM_LINES];
+  const totalRows = ALL_LINES.length;
+  const beeStartRow = totalRows - BEE_ROWS;
+  const contentWidth = indent + TEXT_WIDTH + (beeCount > 0 ? beeGap + beeCount * BEE_UNIT : 0);
+  const rightPad = Math.max(0, width - contentWidth);
+
+  log.print(b.top("│") + " ".repeat(width) + b.top("│"));
+
+  for (let i = 0; i < totalRows; i++) {
+    const textPart = chalk.bold.hex(BORDER_COLOR)(ALL_LINES[i].padEnd(TEXT_WIDTH));
+    const beeRowIdx = i - beeStartRow;
+    let beePart = "";
+    if (beeCount > 0) {
+      const beeContent =
+        beeRowIdx >= 0 && beeRowIdx < BEE_ROWS
+          ? chalk.bold.hex(BORDER_COLOR)(buildBeeRow(beeRowIdx, beeCount))
+          : " ".repeat(beeCount * BEE_UNIT);
+      beePart = " ".repeat(beeGap) + beeContent;
+    }
+    log.print(
+      b.top("│") + " ".repeat(indent) + textPart + beePart + " ".repeat(rightPad) + b.top("│"),
+    );
+  }
+
+  log.print(b.top("│") + " ".repeat(width) + b.top("│"));
+  const subtitleLine = subtitle.length > width ? subtitle.slice(0, width) : subtitle.padEnd(width);
+  log.print(b.top("│") + chalk.dim(subtitleLine) + b.top("│"));
   log.print(b.divider(`├${"─".repeat(width)}┤`));
 }
 
@@ -1181,8 +1255,8 @@ async function spawnClaudeSession(options: SpawnOptions = {}): Promise<void> {
           `osascript <<EOF
 tell application "iTerm"
   tell current window
-    create tab with default profile
-    tell current session
+    set newTab to (create tab with default profile)
+    tell current session of newTab
       write text "${escapedShellCmd}"
     end tell
   end tell
@@ -1212,10 +1286,10 @@ EOF`,
         }
       }
     } else {
-      execSync(
-        `osascript -e 'tell application "Terminal" to do script "${escapedShellCmd}" in front window'`,
-        { cwd: rootDir(), stdio: "inherit" },
-      );
+      execSync(`osascript -e 'tell application "Terminal" to do script "${escapedShellCmd}"'`, {
+        cwd: rootDir(),
+        stdio: "inherit",
+      });
     }
 
     sessionProcess = spawn("echo", ["Session started in new terminal"], {
@@ -2442,8 +2516,6 @@ async function main(): Promise<void> {
 
     return;
   }
-
-  log.info("\n  ⬡ Claude Swarm\n");
 
   const isGitRepo = existsSync(join(DEFAULT_ROOT_DIR, ".git"));
   if (!isGitRepo) {
