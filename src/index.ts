@@ -607,6 +607,10 @@ const terminalWidth = () => process.stdout.columns || 80;
 const boxContentWidth = () => terminalWidth() - 2;
 
 const BORDER_COLOR = "#0077cc";
+const isEmbeddedTerminal =
+  (process.env.TERMINAL_EMULATOR ?? "").includes("JetBrains") ||
+  process.env.TERM_PROGRAM === "vscode";
+const clickToOpen = process.platform === "darwin" ? "Cmd+Click to open" : "Ctrl+Click to open";
 
 const b = {
   top: (s: string) => chalk.bold.hex(BORDER_COLOR)(s),
@@ -1247,8 +1251,8 @@ async function spawnClaudeSession(options: SpawnOptions = {}): Promise<void> {
     }
   } else {
     const terminalApp = process.env.TERM_PROGRAM === "iTerm.app" ? "iTerm" : "Terminal";
-    const shellCmd = `cd "${sessionDir}" && ${claudeCmd}; claude --dangerously-skip-permissions`;
-    const escapeForAppleScript = (cmd: string) => cmd.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    const shellCmd = `cd '${sessionDir}' && ${claudeCmd}; claude --dangerously-skip-permissions`;
+    const escapeForAppleScript = (cmd: string) => cmd.replace(/\\/g, "\\\\");
     const escapedShellCmd = escapeForAppleScript(shellCmd);
 
     if (terminalApp === "iTerm") {
@@ -1977,7 +1981,7 @@ async function showStatus(): Promise<void> {
         const error = adapter.lastError();
         const urlSuffix =
           running && adapterUrl
-            ? chalk.cyan(` ${adapterUrl}`) + chalk.dim(" (Ctrl+Click to open)")
+            ? chalk.cyan(` ${adapterUrl}`) + chalk.dim(` (${clickToOpen})`)
             : "";
         let statusText: string;
         if (error) {
@@ -2390,7 +2394,7 @@ async function mainMenu(): Promise<void> {
 
     const realAdapters = appAdapters.filter((a) => !(a instanceof NullAdapter));
     const refreshAppStatus =
-      realAdapters.length > 0
+      realAdapters.length > 0 && !isEmbeddedTerminal
         ? async (menuLines: number) => {
             const width = boxContentWidth();
             const linesUp = menuLines + 1 + 1 + 1 + 1 + realAdapters.length;
@@ -2401,7 +2405,7 @@ async function mainMenu(): Promise<void> {
               const error = adapter.lastError();
               const urlSuffix =
                 running && adapterUrl
-                  ? chalk.cyan(` ${adapterUrl}`) + chalk.dim(" (Ctrl+Click to open)")
+                  ? chalk.cyan(` ${adapterUrl}`) + chalk.dim(` (${clickToOpen})`)
                   : "";
               let statusText: string;
               if (error) {

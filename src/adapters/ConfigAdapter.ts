@@ -37,7 +37,6 @@ export class ConfigAdapter implements AppAdapter {
   private pid: number | undefined;
   private proc: ChildProcess | null = null;
   private running = false;
-  private started = false;
   private startError: string | null = null;
 
   constructor(config: AppAdapterConfig, cwd: string) {
@@ -70,7 +69,6 @@ export class ConfigAdapter implements AppAdapter {
   async start(): Promise<void> {
     await this.kill();
     this.killPort();
-    this.started = true;
     this.startError = null;
 
     const logPath = this.logFile();
@@ -170,7 +168,6 @@ export class ConfigAdapter implements AppAdapter {
 
   async isRunning(): Promise<boolean> {
     if (this.running) return true;
-    if (!this.started) return false;
 
     const detected = await this.detectRunning();
     if (detected) {
