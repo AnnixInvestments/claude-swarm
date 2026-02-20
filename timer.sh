@@ -12,10 +12,33 @@
 
 TIMED_STEPS=()
 
+_timer_ms() {
+  if command -v gdate &>/dev/null; then
+    gdate +%s%3N
+  else
+    python3 -c "import time; print(int(time.time()*1000))"
+  fi
+}
+
+_format_ms() {
+  local ms="$1"
+  local total_s=$((ms / 1000))
+  local frac=$(( (ms % 1000) / 100 ))
+  local mins=$((total_s / 60))
+  local secs=$((total_s % 60))
+
+  if [ "$mins" -gt 0 ]; then
+    printf "%dm %02d.%ds" "$mins" "$secs" "$frac"
+  else
+    printf "%2d.%ds" "$secs" "$frac"
+  fi
+}
+
 timed_step() {
   local name="$1"
   shift
-  local start=$SECONDS
+  local start
+  start=$(_timer_ms)
   local exit_code=0
 
   echo ""
@@ -23,7 +46,9 @@ timed_step() {
 
   "$@" || exit_code=$?
 
-  local elapsed=$((SECONDS - start))
+  local end
+  end=$(_timer_ms)
+  local elapsed=$((end - start))
 
   if [ "$exit_code" -ne 0 ]; then
     TIMED_STEPS+=("${name}|${elapsed}|failed")
@@ -35,16 +60,16 @@ timed_step() {
 }
 
 print_timing_summary() {
-  local max_secs=0
+  local max_ms=0
   local max_name=""
   local total=0
 
   for entry in "${TIMED_STEPS[@]}"; do
-    local secs="${entry#*|}"
-    secs="${secs%|*}"
-    total=$((total + secs))
-    if [ "$secs" -gt "$max_secs" ]; then
-      max_secs=$secs
+    local ms="${entry#*|}"
+    ms="${ms%|*}"
+    total=$((total + ms))
+    if [ "$ms" -gt "$max_ms" ]; then
+      max_ms=$ms
       max_name="${entry%%|*}"
     fi
   done
@@ -57,10 +82,8 @@ print_timing_summary() {
   for entry in "${TIMED_STEPS[@]}"; do
     local name="${entry%%|*}"
     local rest="${entry#*|}"
-    local secs="${rest%%|*}"
+    local ms="${rest%%|*}"
     local status="${rest##*|}"
-    local mins=$((secs / 60))
-    local rem=$((secs % 60))
     local suffix=""
 
     if [ "$status" = "failed" ]; then
@@ -69,12 +92,14 @@ print_timing_summary() {
       suffix="  <- slowest"
     fi
 
-    printf "  %-32s %dm %02ds%s\n" "$name" "$mins" "$rem" "$suffix"
+    local formatted
+    formatted=$(_format_ms "$ms")
+    printf "  %-32s %8s%s\n" "$name" "$formatted" "$suffix"
   done
 
   echo "$sep"
-  local total_mins=$((total / 60))
-  local total_rem=$((total % 60))
-  printf "  %-32s %dm %02ds\n" "TOTAL" "$total_mins" "$total_rem"
+  local total_formatted
+  total_formatted=$(_format_ms "$total")
+  printf "  %-32s %8s\n" "TOTAL" "$total_formatted"
   echo ""
 }
