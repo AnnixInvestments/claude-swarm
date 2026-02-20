@@ -15,6 +15,7 @@ export interface AppAdapterConfig {
   readyPattern?: string;
   port?: number;
   health?: string;
+  logDir?: string;
 }
 
 function resolveCommand(cmd: PlatformCommand): string {
@@ -46,7 +47,7 @@ export class ConfigAdapter implements AppAdapter {
   }
 
   logFile(): string {
-    return join(this.cwd, "logs", `${this.name}.log`);
+    return join(this.cwd, this.config.logDir ?? "logs", `${this.name}.log`);
   }
 
   url(): string | null {
