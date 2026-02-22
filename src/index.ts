@@ -1896,7 +1896,10 @@ async function showSessionsMenu(): Promise<void> {
             name: "Interactive - prompts for confirmation (Recommended)",
             value: SessionMode.Interactive,
           },
-          { name: "Auto-approve - accepts all actions without prompting", value: SessionMode.AutoApprove },
+          {
+            name: "Auto-approve - accepts all actions without prompting",
+            value: SessionMode.AutoApprove,
+          },
           { name: chalk.dim("← Cancel"), value: SessionMode.Cancel },
         ],
         SessionMode.Cancel,
