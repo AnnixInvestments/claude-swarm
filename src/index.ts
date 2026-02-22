@@ -54,7 +54,7 @@ interface ManagedSession {
   worktreePath?: string;
   startTime: Date;
   status: "running" | "stopped";
-  headless: boolean;
+  autoApprove: boolean;
   task?: string;
   pidFile?: string;
 }
@@ -68,7 +68,7 @@ interface MenuChoice {
 interface SpawnOptions {
   branch?: string;
   createBranch?: boolean;
-  headless?: boolean;
+  autoApprove?: boolean;
   task?: string;
 }
 
@@ -137,7 +137,7 @@ enum BranchPlacement {
 
 enum SessionMode {
   Interactive = "interactive",
-  Headless = "headless",
+  AutoApprove = "auto-approve",
   Cancel = "cancel",
 }
 
@@ -1139,11 +1139,11 @@ async function approveBranch(branch: string): Promise<void> {
 }
 
 async function spawnClaudeSession(options: SpawnOptions = {}): Promise<void> {
-  const { branch, createBranch = false, headless = false, task } = options;
+  const { branch, createBranch = false, autoApprove = false, task } = options;
 
   sessionCounter++;
   const sessionId = `session-${sessionCounter}`;
-  const modeLabel = headless ? "headless" : "interactive";
+  const modeLabel = autoApprove ? "auto-approve" : "interactive";
   const sessionName = `Claude ${sessionCounter} (${modeLabel})`;
 
   const branchName = branch ?? "main";
@@ -1196,11 +1196,7 @@ async function spawnClaudeSession(options: SpawnOptions = {}): Promise<void> {
   }
 
   let claudeCmd = "claude";
-  if (headless) {
-    claudeCmd = taskFile
-      ? `cat '${taskFile}' | claude -p --dangerously-skip-permissions`
-      : "claude -p --dangerously-skip-permissions";
-  } else if (taskFile) {
+  if (!autoApprove && taskFile) {
     claudeCmd = `cat '${taskFile}' | claude`;
   }
 
@@ -1212,7 +1208,7 @@ async function spawnClaudeSession(options: SpawnOptions = {}): Promise<void> {
     const hasWindowsTerminal = exec("where wt", { silent: true }) !== "";
 
     let psClaudeCmd: string;
-    if (headless) {
+    if (autoApprove) {
       psClaudeCmd = taskFile
         ? `Get-Content '${taskFile}' | & '${claudePath}' -p --dangerously-skip-permissions`
         : `& '${claudePath}' -p --dangerously-skip-permissions`;
@@ -1251,7 +1247,18 @@ async function spawnClaudeSession(options: SpawnOptions = {}): Promise<void> {
     }
   } else {
     const terminalApp = process.env.TERM_PROGRAM === "iTerm.app" ? "iTerm" : "Terminal";
-    const shellCmd = `cd '${sessionDir}' && ${claudeCmd}; claude --dangerously-skip-permissions`;
+    let shellCmd: string;
+    if (autoApprove && taskFile) {
+      const scriptFile = join(tmpdir(), `claude-swarm-${sessionId}.sh`);
+      writeFileSync(
+        scriptFile,
+        `#!/usr/bin/env bash\ncd '${sessionDir}'\nclaude --dangerously-skip-permissions "$(cat '${taskFile}')"\n`,
+        "utf-8",
+      );
+      shellCmd = `bash '${scriptFile}'`;
+    } else {
+      shellCmd = `cd '${sessionDir}' && ${claudeCmd}; claude --dangerously-skip-permissions`;
+    }
     const escapeForAppleScript = (cmd: string) => cmd.replace(/\\/g, "\\\\");
     const escapedShellCmd = escapeForAppleScript(shellCmd);
 
@@ -1316,7 +1323,7 @@ EOF`,
     worktreePath,
     startTime: new Date(),
     status: "running",
-    headless,
+    autoApprove,
     task,
     pidFile,
   };
@@ -1324,8 +1331,8 @@ EOF`,
   managedSessions.set(sessionId, session);
 
   log.info(`${sessionName} started on branch ${branchName}`);
-  if (headless) {
-    log.warn("  Headless mode: Claude will auto-accept all actions");
+  if (autoApprove) {
+    log.warn("  Auto-approve: Claude will accept all actions without prompting");
   }
 }
 
@@ -1512,7 +1519,7 @@ async function showSessionsMenu(): Promise<void> {
       for (const session of managed) {
         const runtime = Math.round((Date.now() - session.startTime.getTime()) / 60000);
         const statusColor = session.status === "running" ? chalk.green : chalk.dim;
-        const modeIcon = session.headless ? "headless" : "interactive";
+        const modeIcon = session.autoApprove ? "auto-approve" : "interactive";
         const projectLabel = chalk.bold(session.project.name);
         const taskPreview = session.task
           ? chalk.dim(` "${session.task.slice(0, 40)}${session.task.length > 40 ? "..." : ""}"`)
@@ -1889,7 +1896,7 @@ async function showSessionsMenu(): Promise<void> {
             name: "Interactive - prompts for confirmation (Recommended)",
             value: SessionMode.Interactive,
           },
-          { name: "Headless - auto-accepts all actions", value: SessionMode.Headless },
+          { name: "Auto-approve - accepts all actions without prompting", value: SessionMode.AutoApprove },
           { name: chalk.dim("← Cancel"), value: SessionMode.Cancel },
         ],
         SessionMode.Cancel,
@@ -1897,19 +1904,19 @@ async function showSessionsMenu(): Promise<void> {
 
       if (mode === SessionMode.Cancel) continue;
 
-      const headless = mode === SessionMode.Headless;
+      const autoApprove = mode === SessionMode.AutoApprove;
 
-      if (headless && !task) {
+      if (autoApprove && !task) {
         task = await input({
-          message: "Task for headless session:",
-          validate: (val) => (val.trim() ? true : "Task required for headless mode"),
+          message: "Task for auto-approve session:",
+          validate: (val) => (val.trim() ? true : "Task required for auto-approve mode"),
         });
       }
 
       await spawnClaudeSession({
         branch: selectedBranch,
         createBranch: createNewBranch,
-        headless,
+        autoApprove,
         task,
       });
     } else if (action === SessionAction.Terminate) {
