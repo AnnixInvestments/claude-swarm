@@ -2051,9 +2051,24 @@ async function rawSelect<T extends string>(
       choices.flatMap((c, i) => (c.key ? [[c.key.toLowerCase(), i] as [string, number]] : [])),
     );
 
+    for (let i = 0; i < Math.min(choices.length, 9); i++) {
+      const numKey = String(i + 1);
+      if (!keyMap.has(numKey)) {
+        keyMap.set(numKey, i);
+      }
+    }
+
+    const hasExplicitKeys = choices.some((c) => c.key);
+    const displayChoices = hasExplicitKeys
+      ? choices
+      : choices.map((c, i) => ({
+          ...c,
+          name: i < 9 ? `${c.name} ${chalk.cyan(`[${i + 1}]`)}` : c.name,
+        }));
+
     log.print(`${chalk.bold(message)} ${chalk.dim("(use arrow keys, enter, or shortcut)")}`);
-    for (let index = 0; index < choices.length; index++) {
-      const choice = choices[index];
+    for (let index = 0; index < displayChoices.length; index++) {
+      const choice = displayChoices[index];
       const isSelected = index === selectedIndex;
       const prefix = isSelected ? chalk.cyan("> ") : "  ";
       const text = isSelected ? chalk.cyan(choice.name) : choice.name;
@@ -2099,12 +2114,12 @@ async function rawSelect<T extends string>(
       if (buf.length === 3 && buf[0] === 0x1b && buf[1] === 0x5b) {
         if (buf[2] === 0x41) {
           selectedIndex = (selectedIndex - 1 + choices.length) % choices.length;
-          renderMenu(message, choices, selectedIndex);
+          renderMenu(message, displayChoices, selectedIndex);
           return;
         }
         if (buf[2] === 0x42) {
           selectedIndex = (selectedIndex + 1) % choices.length;
-          renderMenu(message, choices, selectedIndex);
+          renderMenu(message, displayChoices, selectedIndex);
           return;
         }
         return;
