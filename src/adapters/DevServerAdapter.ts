@@ -1,5 +1,20 @@
 import { execSync } from "node:child_process";
+import { createConnection } from "node:net";
 import type { AppAdapter } from "./AppAdapter.js";
+
+function checkPort(port: number, timeout = 2000): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = createConnection({ port, host: "127.0.0.1" }, () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.on("error", () => resolve(false));
+    socket.setTimeout(timeout, () => {
+      socket.destroy();
+      resolve(false);
+    });
+  });
+}
 
 export abstract class DevServerAdapter implements AppAdapter {
   abstract readonly name: string;
@@ -59,26 +74,7 @@ export abstract class DevServerAdapter implements AppAdapter {
   }
 
   async isRunning(): Promise<boolean> {
-    if (process.platform === "win32") {
-      try {
-        const result = execSync(
-          `powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort ${this.port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1"`,
-          { encoding: "utf-8", stdio: "pipe" },
-        ).trim();
-        return result !== "";
-      } catch {
-        return false;
-      }
-    }
-    try {
-      const result = execSync(`lsof -i :${this.port} -sTCP:LISTEN 2>/dev/null | grep -c LISTEN`, {
-        encoding: "utf-8",
-        stdio: "pipe",
-      }).trim();
-      return Number.parseInt(result, 10) > 0;
-    } catch {
-      return false;
-    }
+    return checkPort(this.port);
   }
 
   logFile(): string | null {

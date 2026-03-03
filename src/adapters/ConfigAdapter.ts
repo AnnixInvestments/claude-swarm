@@ -1,7 +1,22 @@
 import { type ChildProcess, execSync, spawn } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createConnection } from "node:net";
 import { dirname, join } from "node:path";
 import type { AppAdapter } from "./AppAdapter.js";
+
+function checkPort(port: number, timeout = 2000): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = createConnection({ port, host: "127.0.0.1" }, () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.on("error", () => resolve(false));
+    socket.setTimeout(timeout, () => {
+      socket.destroy();
+      resolve(false);
+    });
+  });
+}
 
 const isWindows = process.platform === "win32";
 
@@ -186,41 +201,8 @@ export class ConfigAdapter implements AppAdapter {
         return false;
       }
     }
-    if (process.platform === "win32") {
-      if (this.config.port) {
-        try {
-          const result = execSync(
-            `powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort ${this.config.port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1"`,
-            { encoding: "utf-8", stdio: "pipe" },
-          ).trim();
-          return result !== "";
-        } catch {
-          return false;
-        }
-      }
-      if (this.pid !== undefined) {
-        try {
-          const result = execSync(
-            `powershell -NoProfile -Command "Get-Process -Id ${this.pid} -ErrorAction SilentlyContinue"`,
-            { encoding: "utf-8", stdio: "pipe" },
-          ).trim();
-          return result !== "";
-        } catch {
-          return false;
-        }
-      }
-      return false;
-    }
     if (this.config.port) {
-      try {
-        const result = execSync(`lsof -i :${this.config.port} -t 2>/dev/null`, {
-          encoding: "utf-8",
-          stdio: "pipe",
-        }).trim();
-        return result !== "";
-      } catch {
-        return false;
-      }
+      return checkPort(this.config.port);
     }
     if (this.pid !== undefined) {
       try {

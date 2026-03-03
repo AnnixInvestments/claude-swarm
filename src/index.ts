@@ -374,12 +374,13 @@ async function selectProjectForSession(): Promise<ProjectConfig | null> {
   return project ?? null;
 }
 
-function exec(cmd: string, options: { cwd?: string; silent?: boolean } = {}): string {
+function exec(cmd: string, options: { cwd?: string; silent?: boolean; timeout?: number } = {}): string {
   try {
     return execSync(cmd, {
       cwd: options.cwd ?? rootDir(),
       encoding: "utf-8",
       stdio: options.silent ? "pipe" : ["pipe", "pipe", "pipe"],
+      timeout: options.timeout ?? 10000,
     }).trim();
   } catch (error) {
     if (!options.silent) {
@@ -513,7 +514,7 @@ function detectClaudeSessions(): Session[] {
       return result;
     }
     if (platform === "win32") {
-      const output = exec("tasklist /v /fo csv", { silent: true });
+      const output = exec('tasklist /fi "IMAGENAME eq claude*" /fo csv', { silent: true });
       const lines = output
         .split("\n")
         .filter((line) => line.toLowerCase().includes("claude") && !line.includes("claude-swarm"));
@@ -536,7 +537,7 @@ function detectClaudeSessions(): Session[] {
         const pidList = claudeProcesses.map((p) => p.pid).join(",");
         const psOutput = exec(
           `powershell -NoProfile -Command "${pidList} | ForEach-Object { $p = Get-Process -Id $_ -ErrorAction SilentlyContinue; if ($p -and $p.MainWindowHandle -ne 0) { $_ } }"`,
-          { silent: true },
+          { silent: true, timeout: 5000 },
         );
         for (const line of psOutput.split("\n")) {
           const pid = Number.parseInt(line.trim(), 10);
@@ -647,7 +648,7 @@ function buildBeeRow(rowIdx: number, beeCount: number): string {
 }
 
 function printHeader(): void {
-  process.stdout.write("\x1b[2J\x1b[H");
+  process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
   const width = boxContentWidth();
   const versionTag = `v${VERSION}`;
   const subtitle = `  ${currentProject.name} · worktree isolation · parallel sessions · dev lifecycle · branch management · ${versionTag}`;
@@ -1210,8 +1211,8 @@ async function spawnClaudeSession(options: SpawnOptions = {}): Promise<void> {
     let psClaudeCmd: string;
     if (autoApprove) {
       psClaudeCmd = taskFile
-        ? `Get-Content '${taskFile}' | & '${claudePath}' -p --dangerously-skip-permissions`
-        : `& '${claudePath}' -p --dangerously-skip-permissions`;
+        ? `& '${claudePath}' --dangerously-skip-permissions (Get-Content -Raw '${taskFile}')`
+        : `& '${claudePath}' --dangerously-skip-permissions`;
     } else if (taskFile) {
       psClaudeCmd = `Get-Content '${taskFile}' | & '${claudePath}'`;
     } else {
@@ -1228,12 +1229,10 @@ async function spawnClaudeSession(options: SpawnOptions = {}): Promise<void> {
 
     if (hasWindowsTerminal) {
       const wtCmd = `wt -w -1 new-tab --title "${sessionName} on ${branchName}" --suppressApplicationTitle -d "${sessionDir}" powershell -ExecutionPolicy Bypass -NoProfile -File "${scriptFile}"`;
-      sessionProcess = spawn(wtCmd, [], {
-        cwd: rootDir(),
-        detached: true,
-        stdio: "ignore",
-        shell: true,
-      });
+      try {
+        execSync(wtCmd, { stdio: "ignore", timeout: 10000, windowsHide: true });
+      } catch {}
+      sessionProcess = spawn("cmd", ["/c", "echo", "done"], { stdio: "ignore" });
     } else {
       sessionProcess = spawn(
         "powershell",
@@ -2085,12 +2084,32 @@ async function rawSelect<T extends string>(
 
     process.stdout.write("\x1b[?25l");
 
+    let resizeTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const onResize = () => {
+      if (resizeTimer) clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        resizeTimer = null;
+        cleanup();
+        if (cancelValue !== undefined) {
+          resolve(cancelValue);
+        } else {
+          const backChoice = choices.find(
+            (c) => c.value === Sentinel.Back || c.value === MainAction.Refresh,
+          );
+          resolve(backChoice?.value ?? (Sentinel.Back as T));
+        }
+      }, 300);
+    };
+
+    process.stdout.on("resize", onResize);
+
     const cleanup = () => {
       if (refreshTimer) clearInterval(refreshTimer);
+      if (resizeTimer) clearTimeout(resizeTimer);
       process.stdout.write("\x1b[?25h");
       process.stdin.removeListener("data", handler);
-      process.stdin.setRawMode(false);
-      process.stdin.pause();
+      process.stdout.removeListener("resize", onResize);
     };
 
     const clearMenu = () => {
@@ -2282,8 +2301,6 @@ async function showAppLogs(): Promise<void> {
           const isCtrlC = byte === 0x03;
           if (isQ || isEscape || isCtrlC) {
             process.stdin.removeListener("data", handler);
-            process.stdin.setRawMode(false);
-            process.stdin.pause();
             cleanup();
             resolve();
           }
@@ -2559,6 +2576,14 @@ async function main(): Promise<void> {
 
   await mainMenu();
 }
+
+process.on("exit", () => {
+  try {
+    if (process.stdin.isTTY) {
+      process.stdin.setRawMode(false);
+    }
+  } catch {}
+});
 
 main().catch((error: Error) => {
   log.error(`Error: ${error.message}`);
