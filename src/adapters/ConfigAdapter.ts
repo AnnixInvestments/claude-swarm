@@ -304,19 +304,21 @@ export class ConfigAdapter implements AppAdapter {
       }
       return;
     }
-    if (this.pid !== undefined) {
-      try {
-        process.kill(-this.pid, signal);
-      } catch {}
-      this.pid = undefined;
-      return;
-    }
     if (this.config.port) {
       try {
         execSync(`lsof -ti :${this.config.port} | xargs kill -${signal} 2>/dev/null`, {
           stdio: "pipe",
         });
       } catch {}
+      this.pid = undefined;
+      return;
+    }
+    if (this.pid !== undefined) {
+      try {
+        process.kill(-this.pid, signal);
+      } catch {}
+      this.pid = undefined;
+      return;
     }
   }
 }
