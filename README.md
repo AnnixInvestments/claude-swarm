@@ -276,6 +276,23 @@ interface AppAdapter {
 
 `logFile()` should return the absolute path to the log file for this adapter, or `null` if no log is available. The path is used by the "View logs" TUI feature.
 
+## Releasing
+
+To bump the version, publish to npm, tag, and push in one step:
+
+```sh
+npm run release
+```
+
+This runs `npm version patch` (which bumps `package.json`, commits, and creates a `vX.Y.Z` git tag), then publishes to npm, and pushes the commit and tag to GitHub.
+
+For minor or major bumps, run manually:
+
+```sh
+npm version minor -m 'feat: bump to %s' && npm publish --access public && git push && git push --tags
+npm version major -m 'feat: bump to %s' && npm publish --access public && git push && git push --tags
+```
+
 ## License
 
 MIT

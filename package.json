@@ -36,7 +36,8 @@
     "lint": "biome check src",
     "format": "biome format --write src",
     "format:check": "biome format src",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "release": "npm version patch -m 'feat: bump to %s' && npm publish --access public && git push && git push --tags"
   },
   "dependencies": {
     "@inquirer/prompts": "^8.2.0",
