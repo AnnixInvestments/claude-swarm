@@ -375,7 +375,10 @@ async function selectProjectForSession(): Promise<ProjectConfig | null> {
   return project ?? null;
 }
 
-function exec(cmd: string, options: { cwd?: string; silent?: boolean; timeout?: number } = {}): string {
+function exec(
+  cmd: string,
+  options: { cwd?: string; silent?: boolean; timeout?: number } = {},
+): string {
   try {
     return execSync(cmd, {
       cwd: options.cwd ?? rootDir(),

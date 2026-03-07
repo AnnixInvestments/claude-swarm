@@ -1,5 +1,10 @@
 # claude-swarm
 
+[![npm version](https://img.shields.io/npm/v/@annix/claude-swarm?color=cb3837&logo=npm)](https://www.npmjs.com/package/@annix/claude-swarm)
+[![npm downloads](https://img.shields.io/npm/dm/@annix/claude-swarm?color=cb3837&logo=npm)](https://www.npmjs.com/package/@annix/claude-swarm)
+[![license](https://img.shields.io/npm/l/@annix/claude-swarm)](https://github.com/AnnixInvestments/claude-swarm/blob/main/LICENSE)
+[![node](https://img.shields.io/node/v/@annix/claude-swarm)](https://nodejs.org)
+
 Manage multiple parallel Claude CLI sessions with worktree isolation and pluggable dev server lifecycle management.
 
 ## Features
@@ -12,14 +17,26 @@ Manage multiple parallel Claude CLI sessions with worktree isolation and pluggab
 - **Cleanup Tools**: Kill orphaned sessions individually or in bulk
 - **Pluggable App Adapters**: Manage dev servers for any project via config or built-in adapters
 - **Live Log Viewing**: Tail dev server logs inside the TUI
+- **Auto-Approve Mode**: Launch Claude sessions with the `--dangerously-skip-permissions` flag
+- **Number Key Shortcuts**: Press 1-9 to quickly select items in all menus
+- **Per-Step Timing**: Built-in timing utility for pre-push hooks
+- **Responsive Banner**: Adaptive ASCII art banner that scales to terminal width
 
 ## Installation
 
 ```sh
 npm install -g @annix/claude-swarm
-# or run directly via the launcher
-../claude-swarm/bin/claude-swarm
 ```
+
+Or add it as a dev dependency:
+
+```sh
+npm install -D @annix/claude-swarm
+# or
+pnpm add -D @annix/claude-swarm
+```
+
+The package is published on npm: [@annix/claude-swarm](https://www.npmjs.com/package/@annix/claude-swarm)
 
 ## Usage
 
@@ -104,17 +121,18 @@ For platform-specific start/stop scripts, use the `{ mac, windows }` object form
 |-------|------|----------|-------------|
 | `name` | `string` | Yes | Display name shown in the TUI |
 | `start` | `PlatformCommand` | Yes | Command to start the server |
-| `stop` | `PlatformCommand` | Yes | Command or `signal:SIGTERM` to stop gracefully |
-| `kill` | `PlatformCommand` | Yes | Command or `signal:SIGKILL` to force-stop |
+| `stop` | `PlatformCommand` | No | Command or `signal:SIGTERM` to stop gracefully |
+| `kill` | `PlatformCommand` | No | Command or `signal:SIGKILL` to force-stop |
 | `port` | `number` | No | Port the app binds to — used for precise kill and status detection |
 | `health` | `string` | No | HTTP URL polled by `isRunning()` — takes priority over port detection |
 | `readyPattern` | `string` | No | Regex matched against log output to detect when the server is ready |
+| `logDir` | `string` | No | Directory for log files (default: `logs`) |
 
 `PlatformCommand` is `string | { mac: string; windows: string }`.
 
 When `readyPattern` is set, `start` blocks until the pattern matches or the 120 second timeout elapses.
 
-Dev server output is streamed to `logs/<name>.log` in the project directory.
+Dev server output is streamed to `<logDir>/<name>.log` in the project directory (default `logs/<name>.log`).
 
 ### isRunning priority
 
@@ -127,6 +145,8 @@ Dev server output is streamed to `logs/<name>.log` in the project directory.
 `start()` always calls `kill()` first so stale processes from previous runs are cleaned up before a new one starts.
 
 When `port` is configured, `stop()` and `kill()` target only that port — no broad process-pattern matching that could hit unrelated processes.
+
+Both `stop` and `kill` are optional. When omitted, the adapter falls back to sending `SIGTERM` / `SIGKILL` directly to the tracked process.
 
 Use `signal:` when claude-swarm owns the PID directly:
 
@@ -169,9 +189,39 @@ Project configurations are saved to `~/.config/claude-swarm/projects.json`. This
 | `projects[].worktreeDir` | `string` | Where worktrees are created (default: `../name-worktrees` sibling) |
 | `defaultProject` | `string` | Name of the project to select on startup |
 
+## Timer utility
+
+claude-swarm ships a per-step timing utility for pre-push hooks (or any multi-step shell script). It measures each step with millisecond precision, highlights the slowest step, and prints a summary table.
+
+### Bash
+
+```bash
+source "./node_modules/@annix/claude-swarm/timer.sh"
+
+timed_step "lint" npm run lint
+timed_step "typecheck" npm run typecheck
+timed_step "test" npm run test
+
+print_timing_summary
+```
+
+### PowerShell
+
+```powershell
+. "./node_modules/@annix/claude-swarm/timer.ps1"
+
+Invoke-TimedStep "lint" { npm run lint }
+Invoke-TimedStep "typecheck" { npm run typecheck }
+Invoke-TimedStep "test" { npm run test }
+
+Show-TimingSummary
+```
+
+If any step fails, the summary prints immediately and the script exits with the failing exit code.
+
 ## Bin launcher
 
-The `src/bin.ts` script provides hash-based auto-install/build: it only runs `npm install` or `npm run build` when source files have changed since the last run. This means subsequent invocations start instantly.
+The `src/bin.ts` script provides hash-based auto-install/build: it only runs `npm install` or `npm run build` when source files have changed since the last run. This means subsequent invocations start instantly. When installed from npm, the build step is skipped entirely since pre-built `dist/` is included.
 
 ## Branch workflow
 
