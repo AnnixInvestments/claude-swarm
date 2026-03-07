@@ -5,6 +5,8 @@
 [![license](https://img.shields.io/npm/l/@annix/claude-swarm)](https://github.com/AnnixInvestments/claude-swarm/blob/main/LICENSE)
 [![node](https://img.shields.io/node/v/@annix/claude-swarm)](https://nodejs.org)
 
+![claud-swarm.png](claud-swarm.png)
+
 Manage multiple parallel Claude CLI sessions with worktree isolation and pluggable dev server lifecycle management.
 
 ## Features
