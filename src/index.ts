@@ -85,6 +85,7 @@ enum MainAction {
   Sessions = "sessions",
   Pull = "pull",
   Start = "start",
+  Restart = "restart",
   Stop = "stop",
   Logs = "logs",
   Shortcut = "shortcut",
@@ -2397,11 +2398,20 @@ async function mainMenu(): Promise<void> {
     ];
 
     if (hasRealAdapters) {
-      choices.push({
-        name: `${padLabel("Start apps", 28)}${chalk.cyan("[a]")}`,
-        value: MainAction.Start,
-        key: "a",
-      });
+      const anyRunning = await isAnyAdapterRunning();
+      choices.push(
+        anyRunning
+          ? {
+              name: `${padLabel("Restart apps", 28)}${chalk.cyan("[a]")}`,
+              value: MainAction.Restart,
+              key: "a",
+            }
+          : {
+              name: `${padLabel("Start apps", 28)}${chalk.cyan("[a]")}`,
+              value: MainAction.Start,
+              key: "a",
+            },
+      );
       choices.push({
         name: `${padLabel("Stop apps", 28)}${chalk.cyan("[x]")}`,
         value: MainAction.Stop,
@@ -2487,6 +2497,10 @@ async function mainMenu(): Promise<void> {
       await pullChanges();
     } else if (action === MainAction.Start) {
       log.print(chalk.yellow("  Starting apps..."));
+      await startAdapters(true);
+    } else if (action === MainAction.Restart) {
+      log.print(chalk.yellow("  Restarting apps..."));
+      await stopAdapters();
       await startAdapters(true);
     } else if (action === MainAction.Stop) {
       await stopAdapters();
