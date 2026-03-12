@@ -173,6 +173,10 @@ let currentProject: ProjectConfig = {
 };
 
 let claudeBranchPrefix = DEFAULT_BRANCH_PREFIX;
+
+function fullBranchName(name: string): string {
+  return `${claudeBranchPrefix}${name.trim().replace(/\s+/g, "-")}`;
+}
 let appAdapters: AppAdapter[] = [new NullAdapter()];
 const managedSessions = new Map<string, ManagedSession>();
 let sessionCounter = 0;
@@ -982,6 +986,19 @@ async function isAnyAdapterRunning(): Promise<boolean> {
   return results.some(Boolean);
 }
 
+async function createClaudeBranch(): Promise<void> {
+  const branchName = await input({
+    message: `Branch name (will be prefixed with ${claudeBranchPrefix}):`,
+    validate: (val) => (val.trim() ? true : "Branch name required"),
+  });
+
+  const branch = fullBranchName(branchName);
+  const result = exec(`git checkout -b "${branch}"`);
+  if (result !== "") {
+    log.info(`Created and switched to ${branch}`);
+  }
+}
+
 async function showBranchMenu(): Promise<void> {
   const branches = claudeBranches();
   const current = currentBranch();
@@ -1000,14 +1017,7 @@ async function showBranchMenu(): Promise<void> {
     );
 
     if (action === BranchMenuAction.Create) {
-      const branchName = await input({
-        message: `Branch name (will be prefixed with ${claudeBranchPrefix}):`,
-        validate: (val) => (val.trim() ? true : "Branch name required"),
-      });
-
-      const fullBranchName = `${claudeBranchPrefix}${branchName.trim()}`;
-      exec(`git checkout -b ${fullBranchName}`);
-      log.info(`Created and switched to ${fullBranchName}`);
+      await createClaudeBranch();
     }
     return;
   }
@@ -1027,14 +1037,7 @@ async function showBranchMenu(): Promise<void> {
   if (selected === BranchMenuAction.Back) return;
 
   if (selected === BranchMenuAction.Create) {
-    const branchName = await input({
-      message: `Branch name (will be prefixed with ${claudeBranchPrefix}):`,
-      validate: (val) => (val.trim() ? true : "Branch name required"),
-    });
-
-    const fullBranchName = `${claudeBranchPrefix}${branchName.trim()}`;
-    exec(`git checkout -b ${fullBranchName}`);
-    log.info(`Created and switched to ${fullBranchName}`);
+    await createClaudeBranch();
     return;
   }
 
@@ -1834,7 +1837,7 @@ async function showSessionsMenu(): Promise<void> {
             validate: (val) => (val.trim() ? true : "Branch name required"),
           });
 
-          selectedBranch = `${claudeBranchPrefix}${branchName.trim()}`;
+          selectedBranch = fullBranchName(branchName);
           createNewBranch = true;
         } else if (branchChoice === BranchPlacement.Existing) {
           const existingBranchChoices = [
@@ -1878,7 +1881,7 @@ async function showSessionsMenu(): Promise<void> {
             message: `Branch name (will be prefixed with ${claudeBranchPrefix}):`,
             validate: (val) => (val.trim() ? true : "Branch name required"),
           });
-          selectedBranch = `${claudeBranchPrefix}${branchName.trim()}`;
+          selectedBranch = fullBranchName(branchName);
           createNewBranch = true;
         }
 

@@ -1,4 +1,9 @@
+import { appendFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import chalk from "chalk";
+
+const ERROR_LOG_FILE = join(tmpdir(), "claude-swarm-error.log");
 
 const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
 const LOG_LEVELS = { debug: 0, info: 1, warn: 2, error: 3 };
@@ -21,6 +26,9 @@ export const log = {
   },
   error: (message: string) => {
     console.error(chalk.red(message));
+    try {
+      appendFileSync(ERROR_LOG_FILE, `[${new Date().toISOString()}] ${message}\n`);
+    } catch {}
   },
   print: (message = "") => {
     console.log(message);
