@@ -15,3 +15,4 @@
 - **Ask before committing**: Propose message and wait for explicit approval
 - **Semantic commit messages** with issue references
 - **No AI attribution** in commit messages
+- **Hook failures**: When a pre-push hook fails (e.g. lint error), fix the issue and amend the existing commit — do not create a new commit
