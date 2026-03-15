@@ -49,15 +49,17 @@ export class ConfigAdapter implements AppAdapter {
   readonly name: string;
   private readonly config: AppAdapterConfig;
   private readonly cwd: string;
+  private readonly envOverrides: Record<string, string> | null;
   private pid: number | undefined;
   private proc: ChildProcess | null = null;
   private running = false;
   private startError: string | null = null;
 
-  constructor(config: AppAdapterConfig, cwd: string) {
+  constructor(config: AppAdapterConfig, cwd: string, envOverrides?: Record<string, string>) {
     this.name = config.name;
     this.config = config;
     this.cwd = cwd;
+    this.envOverrides = envOverrides ?? null;
   }
 
   logFile(): string {
@@ -97,6 +99,7 @@ export class ConfigAdapter implements AppAdapter {
       detached: !isWindows,
       shell: true,
       windowsHide: true,
+      env: this.envOverrides ? { ...process.env, ...this.envOverrides } : undefined,
     });
     this.pid = proc.pid;
     this.proc = proc;

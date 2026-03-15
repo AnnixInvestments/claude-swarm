@@ -14,9 +14,24 @@ export interface ProjectsConfig {
   defaultProject?: string;
 }
 
+export interface EnvProviderConfig {
+  provider: "flyio";
+  app: string;
+  secrets: string[];
+}
+
+export interface ProfileConfig {
+  description?: string;
+  env?: EnvProviderConfig;
+  localOverrides?: Record<string, string>;
+  apps?: AppAdapterConfig[];
+}
+
 export interface SwarmConfig {
   branchPrefix?: string;
   apps?: AppAdapterConfig[];
+  envDir?: string;
+  profiles?: Record<string, ProfileConfig>;
 }
 
 const CONFIG_FILE_NAME = ".claude-swarm/config.json";
@@ -68,4 +83,8 @@ export function saveProjectsConfig(config: ProjectsConfig): void {
 
 export function projectsConfigFile(): string {
   return PROJECTS_CONFIG_FILE;
+}
+
+export function resolveEnvDir(projectPath: string, config: SwarmConfig): string {
+  return join(projectPath, config.envDir ?? ".claude-swarm/envs");
 }

@@ -16,8 +16,14 @@ import { checkbox, confirm, input, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import type { AppAdapter } from "./adapters/index.js";
 import { ConfigAdapter, NullAdapter } from "./adapters/index.js";
-import { loadProjectsConfig, loadSwarmConfig, saveProjectsConfig } from "./config.js";
-import type { ProjectConfig, ProjectsConfig } from "./config.js";
+import {
+  loadProjectsConfig,
+  loadSwarmConfig,
+  resolveEnvDir,
+  saveProjectsConfig,
+} from "./config.js";
+import type { ProfileConfig, ProjectConfig, ProjectsConfig, SwarmConfig } from "./config.js";
+import { FlyioEnvProvider, loadEnvFile, saveEnvFile, writeEnvFile } from "./env/index.js";
 import { log } from "./log.js";
 
 const { version: VERSION } = JSON.parse(
@@ -78,6 +84,7 @@ enum Subcommand {
   Restart = "restart",
   Status = "status",
   Logs = "logs",
+  Env = "env",
 }
 
 enum MainAction {
@@ -178,6 +185,7 @@ function fullBranchName(name: string): string {
   return `${claudeBranchPrefix}${name.trim().replace(/\s+/g, "-")}`;
 }
 let appAdapters: AppAdapter[] = [new NullAdapter()];
+let activeProfileName: string | null = null;
 const managedSessions = new Map<string, ManagedSession>();
 let sessionCounter = 0;
 
@@ -192,14 +200,40 @@ function worktreeDir(): string {
   );
 }
 
-function initProject(project: ProjectConfig): void {
+function resolveProfileEnv(
+  project: ProjectConfig,
+  swarmConfig: SwarmConfig,
+  profile: ProfileConfig,
+  profileName: string,
+): Record<string, string> | null {
+  const envDir = resolveEnvDir(project.path, swarmConfig);
+  const envFilePath = join(envDir, `${profileName}.env`);
+  const fileEnv = loadEnvFile(envFilePath);
+  const merged = { ...fileEnv, ...(profile.localOverrides ?? {}) };
+
+  if (Object.keys(merged).length === 0) {
+    return null;
+  }
+  return merged;
+}
+
+function initProject(project: ProjectConfig, profileName?: string): void {
   currentProject = project;
   const swarmConfig = loadSwarmConfig(project.path);
 
   claudeBranchPrefix = swarmConfig.branchPrefix ?? DEFAULT_BRANCH_PREFIX;
 
-  if (swarmConfig.apps && swarmConfig.apps.length > 0) {
-    appAdapters = swarmConfig.apps.map((cfg) => new ConfigAdapter(cfg, project.path));
+  const profile = profileName ? swarmConfig.profiles?.[profileName] : undefined;
+  const apps = profile?.apps ?? swarmConfig.apps;
+  const envOverrides =
+    profile && profileName
+      ? (resolveProfileEnv(project, swarmConfig, profile, profileName) ?? undefined)
+      : undefined;
+
+  activeProfileName = profileName ?? null;
+
+  if (apps && apps.length > 0) {
+    appAdapters = apps.map((cfg) => new ConfigAdapter(cfg, project.path, envOverrides));
   } else {
     appAdapters = [new NullAdapter()];
   }
@@ -1989,7 +2023,15 @@ async function showStatus(): Promise<void> {
   const hasRealAdapters = appAdapters.some((a) => !(a instanceof NullAdapter));
 
   if (hasRealAdapters) {
-    printSection("Apps");
+    const profileLabel = activeProfileName
+      ? (() => {
+          const swarmConfig = loadSwarmConfig(currentProject.path);
+          const desc = swarmConfig.profiles?.[activeProfileName]?.description;
+          const label = desc ?? activeProfileName.toUpperCase();
+          return `  ${chalk.bgRed.white(` ${label} `)}`;
+        })()
+      : "";
+    printSection(`Apps${profileLabel}`);
     for (const adapter of appAdapters) {
       if (!(adapter instanceof NullAdapter)) {
         const running = await adapter.isRunning();
@@ -2502,12 +2544,11 @@ async function mainMenu(): Promise<void> {
     } else if (action === MainAction.Pull) {
       await pullChanges();
     } else if (action === MainAction.Start) {
-      log.print(chalk.yellow("  Starting apps..."));
-      await startAdapters(true);
+      await promptAndStartWithProfile();
     } else if (action === MainAction.Restart) {
       log.print(chalk.yellow("  Restarting apps..."));
       await stopAdapters();
-      await startAdapters(true);
+      await promptAndStartWithProfile();
     } else if (action === MainAction.Stop) {
       await stopAdapters();
     } else if (action === MainAction.Logs) {
@@ -2538,12 +2579,144 @@ async function mainMenu(): Promise<void> {
   }
 }
 
+async function promptAndStartWithProfile(): Promise<void> {
+  const swarmConfig = loadSwarmConfig(currentProject.path);
+  const profileNames = Object.keys(swarmConfig.profiles ?? {});
+
+  if (profileNames.length === 0) {
+    log.print(chalk.yellow("  Starting apps..."));
+    await startAdapters(true);
+    return;
+  }
+
+  const profileChoices = [
+    { name: "Local (default)", value: "__local__" },
+    ...profileNames.map((name) => ({
+      name: `${name} — ${swarmConfig.profiles?.[name]?.description ?? ""}`,
+      value: name,
+    })),
+  ];
+
+  const chosen = await select({
+    message: "Which environment?",
+    choices: profileChoices,
+  });
+
+  initProject(currentProject, chosen === "__local__" ? undefined : chosen);
+  log.print(chalk.yellow("  Starting apps..."));
+  await startAdapters(true);
+}
+
+async function envSetup(project: ProjectConfig, profileName: string): Promise<void> {
+  const swarmConfig = loadSwarmConfig(project.path);
+  const profile = swarmConfig.profiles?.[profileName];
+
+  if (!profile) {
+    log.error(`Profile '${profileName}' not found in config.`);
+    const available = Object.keys(swarmConfig.profiles ?? {});
+    if (available.length > 0) {
+      log.print(`Available profiles: ${available.join(", ")}`);
+    }
+    process.exit(1);
+  }
+
+  if (!profile.env) {
+    log.error(`Profile '${profileName}' has no env provider configured.`);
+    process.exit(1);
+  }
+
+  const provider = profile.env.provider === "flyio" ? new FlyioEnvProvider(profile.env.app) : null;
+
+  if (!provider) {
+    log.error(`Unknown env provider: ${profile.env.provider}`);
+    process.exit(1);
+  }
+
+  const values = await provider.fetch(profile.env.secrets);
+
+  if (Object.keys(values).length === 0) {
+    log.error("No secrets fetched. Make sure you are authenticated with 'fly auth login'.");
+    process.exit(1);
+  }
+
+  const envDir = resolveEnvDir(project.path, swarmConfig);
+  const envFilePath = join(envDir, `${profileName}.env`);
+  const content = writeEnvFile(values, {
+    name: profileName,
+    source: `fly app '${profile.env.app}'`,
+  });
+
+  saveEnvFile(envFilePath, content);
+  log.print(chalk.green(`\nProfile '${profileName}' saved to ${envFilePath}`));
+
+  if (profile.localOverrides) {
+    const overrideKeys = Object.keys(profile.localOverrides);
+    log.print(chalk.dim(`Local overrides will be applied at start: ${overrideKeys.join(", ")}`));
+  }
+}
+
+function envList(project: ProjectConfig): void {
+  const swarmConfig = loadSwarmConfig(project.path);
+  const envDir = resolveEnvDir(project.path, swarmConfig);
+
+  if (!existsSync(envDir)) {
+    log.print("No env configs found. Run: claude-swarm env setup <profile>");
+    return;
+  }
+
+  const envFiles = readdirSync(envDir).filter((f) => f.endsWith(".env"));
+
+  if (envFiles.length === 0) {
+    log.print("No env configs found. Run: claude-swarm env setup <profile>");
+    return;
+  }
+
+  log.print("Available env configs:\n");
+
+  for (const file of envFiles) {
+    const name = file.replace(".env", "");
+    const values = loadEnvFile(join(envDir, file));
+    const profile = swarmConfig.profiles?.[name];
+
+    log.print(`  ${chalk.cyan(name)}`);
+    if (profile?.description) log.print(`    ${profile.description}`);
+
+    const source = readFileSync(join(envDir, file), "utf-8").match(/# Source: (.+)/);
+    if (source) log.print(`    Source: ${source[1]}`);
+    if (values.DATABASE_HOST) log.print(`    DB Host: ${values.DATABASE_HOST}`);
+    if (values.AWS_S3_BUCKET) log.print(`    S3 Bucket: ${values.AWS_S3_BUCKET}`);
+    log.print("");
+  }
+}
+
 async function main(): Promise<void> {
   const subcommand = process.argv[2] as Subcommand | undefined;
   const validSubcommands: string[] = Object.values(Subcommand);
+  const profileFlagIndex = process.argv.indexOf("--profile");
+  const profileName =
+    profileFlagIndex >= 0 ? process.argv[profileFlagIndex + 1] || undefined : undefined;
 
   if (subcommand !== undefined && validSubcommands.includes(subcommand)) {
-    initProject(currentProject);
+    if (subcommand === Subcommand.Env) {
+      const envAction = process.argv[3];
+      const envProfileName = process.argv[4];
+
+      if (envAction === "setup") {
+        if (!envProfileName) {
+          log.error("Usage: claude-swarm env setup <profile>");
+          process.exit(1);
+        }
+        await envSetup(currentProject, envProfileName);
+      } else if (envAction === "list") {
+        envList(currentProject);
+      } else {
+        log.error("Usage: claude-swarm env <setup|list> [profile]");
+        process.exit(1);
+      }
+      return;
+    }
+
+    initProject(currentProject, profileName);
 
     switch (subcommand) {
       case Subcommand.Start:

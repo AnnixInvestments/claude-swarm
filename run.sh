@@ -22,6 +22,31 @@ needs_install() {
   return 1
 }
 
+auto_update() {
+  local specifier
+  specifier=$(node -p "require('./package.json').devDependencies['@annix/claude-swarm']" 2>/dev/null)
+
+  # Skip auto-update for local file: references
+  [[ "$specifier" == file:* ]] && return
+
+  local latest
+  latest=$(npm view @annix/claude-swarm version 2>/dev/null)
+  [ -z "$latest" ] && return
+
+  if [ "$latest" != "$specifier" ]; then
+    echo "Updating @annix/claude-swarm: $specifier -> $latest"
+    node -e "
+      const pkg = require('./package.json');
+      pkg.devDependencies['@annix/claude-swarm'] = '$latest';
+      require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+    "
+    pnpm install
+    compute_hash > "$HASH_FILE"
+  fi
+}
+
+auto_update
+
 if needs_install; then
   pnpm install
   compute_hash > "$HASH_FILE"

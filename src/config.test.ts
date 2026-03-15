@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { loadProjectsConfig, saveProjectsConfig } from "./config.js";
 
@@ -25,7 +25,10 @@ describe("loadProjectsConfig", () => {
 
     const corrupted = {
       projects: [
-        { name: "C:\\Users\\andy\\Documents\\Annix-sync", path: "C:\\Users\\andy\\Documents\\Annix-sync" },
+        {
+          name: "C:\\Users\\andy\\Documents\\Annix-sync",
+          path: "C:\\Users\\andy\\Documents\\Annix-sync",
+        },
         { name: "C:\\dev\\claude-swarm", path: "C:\\dev\\claude-swarm" },
       ],
     };
@@ -60,9 +63,7 @@ describe("loadProjectsConfig", () => {
     const { loadProjectsConfigFrom } = await import("./config.js");
 
     const corrupted = {
-      projects: [
-        { name: "/home/user/projects/my-app", path: "/home/user/projects/my-app" },
-      ],
+      projects: [{ name: "/home/user/projects/my-app", path: "/home/user/projects/my-app" }],
     };
 
     writeTestConfig(corrupted);
