@@ -121,7 +121,7 @@ enum BranchMenuAction {
 }
 
 enum BranchAction {
-  Switch = "switch",
+  BringToMain = "bring-to-main",
   Rebase = "rebase",
   Approve = "approve",
   Compare = "compare",
@@ -132,7 +132,7 @@ enum BranchAction {
 enum StartType {
   Main = "main",
   Issue = "issue",
-  Branch = "branch",
+  Worktree = "worktree",
   Cancel = "cancel",
 }
 
@@ -777,14 +777,6 @@ function printEmptyLine(): void {
   log.print(b.content("│") + " ".repeat(boxContentWidth()) + b.content("│"));
 }
 
-async function switchToBranch(branch: string): Promise<void> {
-  log.warn(`\nSwitching to ${branch}...`);
-  const result = exec(`git checkout ${branch}`);
-  if (result !== undefined) {
-    log.info(`Switched to ${branch}`);
-  }
-}
-
 async function rebaseBranch(branch: string): Promise<boolean> {
   log.warn(`\nRebasing ${branch} onto main...`);
 
@@ -1020,16 +1012,27 @@ async function isAnyAdapterRunning(): Promise<boolean> {
   return results.some(Boolean);
 }
 
-async function createClaudeBranch(): Promise<void> {
+async function createWorktreeWithBranch(): Promise<string | null> {
   const branchName = await input({
-    message: `Branch name (will be prefixed with ${claudeBranchPrefix}):`,
-    validate: (val) => (val.trim() ? true : "Branch name required"),
+    message: `Worktree name (will be prefixed with ${claudeBranchPrefix}):`,
+    validate: (val) => (val.trim() ? true : "Name required"),
   });
 
   const branch = fullBranchName(branchName);
-  const result = exec(`git checkout -b "${branch}"`);
-  if (result !== "") {
-    log.info(`Created and switched to ${branch}`);
+  const worktreeName = branch.replace(claudeBranchPrefix, "").replace(/[^a-z0-9-]/gi, "-");
+  const wtPath = join(worktreeDir(), worktreeName);
+
+  if (!existsSync(worktreeDir())) {
+    mkdirSync(worktreeDir(), { recursive: true });
+  }
+
+  try {
+    execSync(`git worktree add "${wtPath}" -b ${branch}`, { cwd: rootDir(), stdio: "inherit" });
+    log.info(`Created worktree at ${wtPath} on branch ${branch}`);
+    return branch;
+  } catch {
+    log.error(`Failed to create worktree at ${wtPath}`);
+    return null;
   }
 }
 
@@ -1038,20 +1041,20 @@ async function showBranchMenu(): Promise<void> {
   const current = currentBranch();
 
   if (branches.length === 0) {
-    log.warn(`\nNo ${claudeBranchPrefix}* branches found.`);
-    log.info("Claude branches are used for parallel development work.\n");
+    log.warn(`\nNo ${claudeBranchPrefix}* worktrees found.`);
+    log.info("Worktrees provide isolated directories for parallel development.\n");
 
     const action = await selectWithEscape(
       "What would you like to do?",
       [
-        { name: `Create a new ${claudeBranchPrefix}* branch`, value: BranchMenuAction.Create },
+        { name: "Create a new worktree", value: BranchMenuAction.Create },
         { name: chalk.dim("← Back"), value: BranchMenuAction.Back },
       ],
       BranchMenuAction.Back,
     );
 
     if (action === BranchMenuAction.Create) {
-      await createClaudeBranch();
+      await createWorktreeWithBranch();
     }
     return;
   }
@@ -1062,16 +1065,16 @@ async function showBranchMenu(): Promise<void> {
   }));
 
   choices.push(
-    { name: `Create new ${claudeBranchPrefix}* branch`, value: BranchMenuAction.Create },
+    { name: "Create new worktree", value: BranchMenuAction.Create },
     { name: chalk.dim("← Back"), value: BranchMenuAction.Back },
   );
 
-  const selected = await selectWithEscape("Select a branch:", choices, BranchMenuAction.Back);
+  const selected = await selectWithEscape("Select a worktree:", choices, BranchMenuAction.Back);
 
   if (selected === BranchMenuAction.Back) return;
 
   if (selected === BranchMenuAction.Create) {
-    await createClaudeBranch();
+    await createWorktreeWithBranch();
     return;
   }
 
@@ -1116,18 +1119,18 @@ async function branchActions(branch: string): Promise<void> {
   const action = await selectWithEscape(
     `Actions for ${branch}:`,
     [
-      { name: "Switch to this branch", value: BranchAction.Switch },
+      { name: "Bring to main (cherry-pick + cleanup)", value: BranchAction.BringToMain },
       { name: "Rebase onto main", value: BranchAction.Rebase },
       { name: "Approve (rebase + merge + delete)", value: BranchAction.Approve },
       { name: "Compare with main", value: BranchAction.Compare },
-      { name: "Delete branch", value: BranchAction.Delete },
+      { name: "Delete worktree + branch", value: BranchAction.Delete },
       { name: chalk.dim("← Back"), value: BranchAction.Back },
     ],
     BranchAction.Back,
   );
 
-  if (action === BranchAction.Switch) {
-    await switchToBranch(branch);
+  if (action === BranchAction.BringToMain) {
+    await bringToMain(branch);
   } else if (action === BranchAction.Rebase) {
     await rebaseBranch(branch);
   } else if (action === BranchAction.Approve) {
@@ -1137,6 +1140,74 @@ async function branchActions(branch: string): Promise<void> {
   } else if (action === BranchAction.Delete) {
     await deleteBranch(branch);
   }
+}
+
+async function bringToMain(branch: string): Promise<void> {
+  const commitsStr = exec(`git log --oneline main..${branch}`, { silent: true });
+  const commits = commitsStr
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  if (commits.length === 0) {
+    log.warn(`${branch} has no commits ahead of main — nothing to bring.`);
+    await confirm({ message: "Press Enter to continue...", default: true });
+    return;
+  }
+
+  log.info(`\n${branch} has ${commits.length} commit(s) to bring to main:\n`);
+  for (const commit of commits) {
+    log.print(`  ${commit}`);
+  }
+  log.print("");
+
+  const confirmed = await confirm({
+    message: `Cherry-pick ${commits.length === 1 ? "this commit" : "these commits"} onto main and clean up the worktree?`,
+    default: true,
+  });
+
+  if (!confirmed) return;
+
+  exec("git checkout main");
+
+  const latestCommit = commits[0].split(" ")[0];
+  const oldestCommit = commits[commits.length - 1].split(" ")[0];
+  const commitRange = commits.length === 1 ? latestCommit : `${oldestCommit}^..${latestCommit}`;
+
+  try {
+    execSync(`git cherry-pick ${commitRange}`, { cwd: rootDir(), stdio: "inherit" });
+    log.info(`Cherry-picked ${commits.length} commit(s) onto main`);
+  } catch {
+    log.error("Cherry-pick failed. Resolve conflicts, then run: git cherry-pick --continue");
+
+    const abortChoice = await selectWithEscape(
+      "What would you like to do?",
+      [
+        { name: "Abort cherry-pick (revert to clean main)", value: CherryPickAbort.Abort },
+        { name: "Leave as-is (resolve manually)", value: CherryPickAbort.Manual },
+      ],
+      CherryPickAbort.Abort,
+    );
+
+    if (abortChoice === CherryPickAbort.Abort) {
+      try {
+        execSync("git cherry-pick --abort", { cwd: rootDir(), stdio: "pipe" });
+        log.info("Cherry-pick aborted.");
+      } catch {}
+    }
+    return;
+  }
+
+  const cleanup = await confirm({
+    message: "Remove worktree and delete branch?",
+    default: true,
+  });
+
+  if (cleanup) {
+    await deleteBranch(branch);
+  }
+
+  log.info(`\nDone! ${commits.length} commit(s) are now on main locally.`);
 }
 
 async function approveBranch(branch: string): Promise<void> {
@@ -1769,7 +1840,7 @@ async function showSessionsMenu(): Promise<void> {
         [
           { name: "Quick start on main (Recommended)", value: StartType.Main },
           { name: "Start with GitHub issue", value: StartType.Issue },
-          { name: "Start on specific branch", value: StartType.Branch },
+          { name: "Start in worktree (isolated)", value: StartType.Worktree },
           { name: chalk.dim("← Cancel"), value: StartType.Cancel },
         ],
         StartType.Cancel,
@@ -1834,15 +1905,12 @@ async function showSessionsMenu(): Promise<void> {
         const existingBranches = claudeBranches();
         const branchChoiceOptions = [
           { name: "Main directory (no isolation)", value: BranchPlacement.Main },
-          {
-            name: "New worktree (isolated directory with new branch)",
-            value: BranchPlacement.Create,
-          },
+          { name: "New worktree (isolated)", value: BranchPlacement.Create },
         ];
 
         if (existingBranches.length > 0) {
           branchChoiceOptions.push({
-            name: "Existing worktree/branch",
+            name: "Existing worktree",
             value: BranchPlacement.Existing,
           });
         }
@@ -1889,22 +1957,18 @@ async function showSessionsMenu(): Promise<void> {
         } else {
           selectedBranch = "main";
         }
-      } else if (startType === StartType.Branch) {
+      } else if (startType === StartType.Worktree) {
         const branches = claudeBranches();
-        const allBranchesList = allBranches();
 
-        const branchChoices = [
-          { name: "Create new worktree with new branch", value: Sentinel.CreateNew },
-          ...branches.map((b) => ({ name: `${b.name} (claude branch)`, value: b.name })),
-          ...allBranchesList
-            .filter((b) => !b.startsWith(claudeBranchPrefix) && b !== "main")
-            .map((b) => ({ name: b, value: b })),
+        const worktreeChoices = [
+          { name: "Create new worktree", value: Sentinel.CreateNew },
+          ...branches.map((b) => ({ name: b.name, value: b.name })),
           { name: chalk.dim("← Cancel"), value: StartType.Cancel },
         ];
 
         selectedBranch = await selectWithEscape(
-          "Select branch (will use/create worktree):",
-          branchChoices,
+          "Select worktree:",
+          worktreeChoices,
           StartType.Cancel,
         );
 
@@ -1912,8 +1976,8 @@ async function showSessionsMenu(): Promise<void> {
 
         if (selectedBranch === Sentinel.CreateNew) {
           const branchName = await input({
-            message: `Branch name (will be prefixed with ${claudeBranchPrefix}):`,
-            validate: (val) => (val.trim() ? true : "Branch name required"),
+            message: `Worktree name (will be prefixed with ${claudeBranchPrefix}):`,
+            validate: (val) => (val.trim() ? true : "Name required"),
           });
           selectedBranch = fullBranchName(branchName);
           createNewBranch = true;
@@ -1993,9 +2057,9 @@ async function showStatus(): Promise<void> {
   printBoxLine(chalk.green(current));
   printEmptyLine();
 
-  printSection(`Claude branches (${claudeBranchPrefix}*)`);
+  printSection("Worktrees");
   if (branches.length === 0) {
-    printBoxLine(chalk.dim(`No ${claudeBranchPrefix}* branches`));
+    printBoxLine(chalk.dim("No active worktrees"));
   } else {
     for (const branch of branches) {
       const display = formatBranchDisplay(branch, current);
@@ -2429,9 +2493,9 @@ async function mainMenu(): Promise<void> {
 
     const choices: MenuChoice[] = [
       {
-        name: `${padLabel("Manage branches", 28)}${chalk.cyan("[b]")}`,
+        name: `${padLabel("Manage worktrees", 28)}${chalk.cyan("[w]")}`,
         value: MainAction.Branches,
-        key: "b",
+        key: "w",
       },
       {
         name: `${padLabel(`Manage sessions${sessionInfo}`, 28)}${chalk.cyan("[s]")}`,
