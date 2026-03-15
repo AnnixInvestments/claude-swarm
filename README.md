@@ -73,7 +73,7 @@ The tool will detect the current project and load configuration from `.claude-sw
 
 ### `.claude-swarm/config.json`
 
-Create `.claude-swarm/config.json` in your project root to configure the branch prefix and dev servers. Add `.claude-swarm/logs/` and `.claude-swarm/registry.json` to `.gitignore`.
+Create `.claude-swarm/config.json` in your project root to configure the branch prefix and dev servers. Add `logs/` and `.claude-swarm/registry.json` to `.gitignore`.
 
 ```json
 {
@@ -216,7 +216,7 @@ Invoke-TimedStep "lint" { npm run lint }
 Invoke-TimedStep "typecheck" { npm run typecheck }
 Invoke-TimedStep "test" { npm run test }
 
-Show-TimingSummary
+Write-TimingSummary
 ```
 
 If any step fails, the summary prints immediately and the script exits with the failing exit code.
@@ -225,14 +225,91 @@ If any step fails, the summary prints immediately and the script exits with the 
 
 The `src/bin.ts` script provides hash-based auto-install/build: it only runs `npm install` or `npm run build` when source files have changed since the last run. This means subsequent invocations start instantly. When installed from npm, the build step is skipped entirely since pre-built `dist/` is included.
 
-## Branch workflow
+## Worktree workflow
 
-Claude sessions work on branches with the configured prefix (default `claude/`). The TUI provides:
+All parallel work uses git worktrees for isolation — never bare branches. Each worktree gets its own directory and `claude/*` branch so multiple sessions can run without stepping on each other.
 
-- **Branch listing** — all claude branches with ahead/behind status
-- **Rebase** — rebase a claude branch onto main
-- **Approve** — rebase + fast-forward merge + delete in one step
-- **Cherry-pick** — pull specific commits from a claude branch for testing on main
+### Managing worktrees
+
+From the main menu, press `w` to manage worktrees:
+
+```
+? What would you like to do?
+> Manage worktrees            [w]
+  Manage sessions (1 running) [s]
+  Pull changes                [p]
+  Start apps                  [a]
+  Stop apps                   [x]
+  View logs                   [l]
+  Refresh                     [r]
+  Quit                        [q]
+```
+
+Select a worktree to see available actions:
+
+```
+? Select a worktree:
+  ○ claude/fix-backend-module ↑1 ↓729 (11 days ago)   [1]
+> ○ claude/play-around-a-bit ↓2 behind (83 minutes ago) [2]
+  Create new worktree                                   [3]
+  ← Back                                               [4]
+```
+
+### Worktree actions
+
+| Action | Description |
+|--------|-------------|
+| **Bring to main** | Cherry-picks all commits from the worktree onto main locally. No push, no PR. Optionally cleans up the worktree and branch afterwards. |
+| **Rebase onto main** | Rebases the worktree branch onto the latest main |
+| **Approve** | Rebase + fast-forward merge + delete in one step |
+| **Compare with main** | Shows commits ahead and diff stats |
+| **Delete** | Removes the worktree directory and deletes the branch |
+
+### Bringing worktree work to main
+
+1. Press `w` → select the worktree → **Bring to main**
+2. If the worktree has uncommitted changes, you'll be prompted to commit them first
+3. Review the commits, confirm the cherry-pick
+4. Optionally clean up the worktree and branch
+5. Changes are now on your local main — push when ready
+
+## Environment profiles
+
+Profiles let you start dev servers with different environment configurations (e.g. production database, staging secrets).
+
+### Configuration
+
+Add profiles to `.claude-swarm/config.json`:
+
+```json
+{
+  "apps": [...],
+  "envDir": "backend/configs",
+  "profiles": {
+    "prod": {
+      "description": "Production database + S3 (CAUTION: live data!)",
+      "env": {
+        "provider": "flyio",
+        "app": "my-fly-app",
+        "secrets": ["DATABASE_HOST", "DATABASE_PASSWORD", "AWS_S3_BUCKET"]
+      },
+      "localOverrides": {
+        "FRONTEND_URL": "http://localhost:3000"
+      }
+    }
+  }
+}
+```
+
+### Commands
+
+```sh
+claude-swarm env setup prod   # Fetch secrets from Fly.io, save to envDir
+claude-swarm env list         # Show saved env configs
+claude-swarm start --profile prod  # Start apps with prod env overrides
+```
+
+When starting apps from the interactive menu, you'll be prompted to choose an environment if profiles are configured. The active profile is shown as a badge in the Apps status section.
 
 ## App Adapter interface
 
@@ -247,6 +324,7 @@ import {
   NullAdapter,
   ConfigAdapter,
   DevServerAdapter,
+  ProcessAdapter,
 } from "@annix/claude-swarm";
 ```
 
@@ -258,6 +336,7 @@ import {
 | `NextAdapter` | Next.js frontend (`next dev`) |
 | `ViteAdapter` | Vite dev server (`vite`) |
 | `NullAdapter` | No-op for projects with no managed dev server |
+| `ProcessAdapter` | Lightweight adapter that spawns a command and waits for a ready pattern |
 | `ConfigAdapter` | Generic adapter driven by `.claude-swarm/config.json` |
 | `DevServerAdapter` | Abstract base class; extend to build custom adapters |
 

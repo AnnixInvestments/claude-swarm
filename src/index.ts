@@ -1142,7 +1142,51 @@ async function branchActions(branch: string): Promise<void> {
   }
 }
 
+function worktreePathForBranch(branch: string): string | null {
+  const worktreeList = exec("git worktree list --porcelain", { silent: true });
+  const match = worktreeList.match(
+    new RegExp(
+      `worktree ([^\\n]+)\\n[^\\n]*\\nbranch refs/heads/${branch.replace("/", "\\/")}`,
+      "m",
+    ),
+  );
+  return match ? match[1] : null;
+}
+
 async function bringToMain(branch: string): Promise<void> {
+  const wtPath = worktreePathForBranch(branch);
+
+  if (wtPath) {
+    const uncommitted = exec("git status --porcelain", { silent: true, cwd: wtPath });
+    if (uncommitted) {
+      log.warn("\nWorktree has uncommitted changes — committing first:\n");
+      log.print(uncommitted);
+      log.print("");
+
+      const commitMsg = await input({
+        message: "Commit message:",
+        default: `feat: work from ${branch}`,
+        validate: (val) => (val.trim() ? true : "Message required"),
+      });
+
+      try {
+        execSync("git add -A", { cwd: wtPath, stdio: "pipe" });
+        execSync(`git commit -m "${commitMsg.replace(/"/g, '\\"')}"`, {
+          cwd: wtPath,
+          stdio: "inherit",
+        });
+        log.info("Changes committed.");
+      } catch {
+        log.error("Failed to commit changes in worktree.");
+        return;
+      }
+    }
+  }
+
+  try {
+    execSync("git cherry-pick --abort", { cwd: rootDir(), stdio: "pipe" });
+  } catch {}
+
   const commitsStr = exec(`git log --oneline main..${branch}`, { silent: true });
   const commits = commitsStr
     .split("\n")
@@ -1161,12 +1205,17 @@ async function bringToMain(branch: string): Promise<void> {
   }
   log.print("");
 
-  const confirmed = await confirm({
-    message: `Cherry-pick ${commits.length === 1 ? "this commit" : "these commits"} onto main and clean up the worktree?`,
-    default: true,
-  });
+  const mainDirty = exec("git status --porcelain", { silent: true });
+  let stashed = false;
 
-  if (!confirmed) return;
+  if (mainDirty) {
+    log.info("Stashing local changes...");
+    execSync('git stash push --include-untracked -m "claude-swarm: bring-to-main"', {
+      cwd: rootDir(),
+      stdio: "pipe",
+    });
+    stashed = true;
+  }
 
   exec("git checkout main");
 
@@ -1178,24 +1227,25 @@ async function bringToMain(branch: string): Promise<void> {
     execSync(`git cherry-pick ${commitRange}`, { cwd: rootDir(), stdio: "inherit" });
     log.info(`Cherry-picked ${commits.length} commit(s) onto main`);
   } catch {
-    log.error("Cherry-pick failed. Resolve conflicts, then run: git cherry-pick --continue");
-
-    const abortChoice = await selectWithEscape(
-      "What would you like to do?",
-      [
-        { name: "Abort cherry-pick (revert to clean main)", value: CherryPickAbort.Abort },
-        { name: "Leave as-is (resolve manually)", value: CherryPickAbort.Manual },
-      ],
-      CherryPickAbort.Abort,
-    );
-
-    if (abortChoice === CherryPickAbort.Abort) {
-      try {
-        execSync("git cherry-pick --abort", { cwd: rootDir(), stdio: "pipe" });
-        log.info("Cherry-pick aborted.");
-      } catch {}
+    log.error("Cherry-pick failed. Aborting.");
+    try {
+      execSync("git cherry-pick --abort", { cwd: rootDir(), stdio: "pipe" });
+    } catch {}
+    if (stashed) {
+      execSync("git stash pop", { cwd: rootDir(), stdio: "pipe" });
     }
     return;
+  }
+
+  if (stashed) {
+    try {
+      execSync("git stash pop", { cwd: rootDir(), stdio: "pipe" });
+      log.info("Local changes restored.");
+    } catch {
+      log.warn(
+        "Local changes conflicted with cherry-picked commits. Resolve the conflicts in your working directory.",
+      );
+    }
   }
 
   const cleanup = await confirm({
