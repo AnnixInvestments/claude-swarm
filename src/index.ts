@@ -1390,7 +1390,7 @@ async function spawnClaudeSession(options: SpawnOptions = {}): Promise<void> {
     );
 
     if (hasWindowsTerminal) {
-      const wtCmd = `wt -w -1 new-tab --title "${sessionName} on ${branchName}" --suppressApplicationTitle -d "${sessionDir}" powershell -ExecutionPolicy Bypass -NoProfile -File "${scriptFile}"`;
+      const wtCmd = `wt -w swarm new-tab --title "${sessionName} on ${branchName}" --suppressApplicationTitle -d "${sessionDir}" powershell -ExecutionPolicy Bypass -NoProfile -File "${scriptFile}"`;
       try {
         execSync(wtCmd, { stdio: "ignore", timeout: 10000, windowsHide: true });
       } catch {}
