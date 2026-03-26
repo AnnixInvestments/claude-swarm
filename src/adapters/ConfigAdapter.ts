@@ -28,6 +28,7 @@ export interface AppAdapterConfig {
   stop?: PlatformCommand;
   kill?: PlatformCommand;
   readyPattern?: string;
+  readyTimeoutMs?: number;
   port?: number;
   health?: string;
   logDir?: string;
@@ -122,6 +123,14 @@ export class ConfigAdapter implements AppAdapter {
     const stripAnsi = (str: string) =>
       str.replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[A-Za-z]`, "g"), "");
     let outputBuffer = "";
+    const timeoutMs = this.config.readyTimeoutMs ?? 120_000;
+
+    const readyTimeout = setTimeout(() => {
+      if (!this.running && this.proc) {
+        this.startError = `${this.name} did not become ready within ${timeoutMs / 1000}s`;
+        this.killGroup("SIGKILL");
+      }
+    }, timeoutMs);
 
     const onData = (chunk: Buffer) => {
       logStream.write(chunk);
@@ -129,6 +138,7 @@ export class ConfigAdapter implements AppAdapter {
 
       outputBuffer += chunk.toString();
       if (pattern.test(stripAnsi(outputBuffer))) {
+        clearTimeout(readyTimeout);
         this.running = true;
         outputBuffer = "";
         this.registerInSwarm();
@@ -139,6 +149,7 @@ export class ConfigAdapter implements AppAdapter {
     proc.stderr?.on("data", onData);
 
     proc.on("exit", (code) => {
+      clearTimeout(readyTimeout);
       if (!this.running) {
         this.startError = `${this.name} exited before becoming ready (exit code: ${code})`;
       }
