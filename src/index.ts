@@ -1307,7 +1307,9 @@ async function spawnClaudeSession(options: SpawnOptions = {}): Promise<void> {
   sessionCounter++;
   const sessionId = `session-${sessionCounter}`;
   const modeLabel = autoApprove ? "auto-approve" : "interactive";
-  const sessionName = `Claude ${sessionCounter} (${modeLabel})`;
+  const sessionName = task
+    ? `${task.slice(0, 40)}${task.length > 40 ? "..." : ""}`
+    : `Claude ${sessionCounter} (${modeLabel})`;
 
   const branchName = branch ?? "main";
   const useWorktree = branch && branch !== "main";
@@ -1383,9 +1385,10 @@ async function spawnClaudeSession(options: SpawnOptions = {}): Promise<void> {
 
     pidFile = join(tmpdir(), `claude-swarm-${sessionId}.pid`);
     const scriptFile = join(tmpdir(), `claude-swarm-${sessionId}.ps1`);
+    const psTitle = `${sessionName} on ${branchName}`.replace(/'/g, "''");
     writeFileSync(
       scriptFile,
-      `$PID | Out-File -FilePath '${pidFile}' -NoNewline -Encoding ascii\r\n${psClaudeCmd}\r\n`,
+      `$Host.UI.RawUI.WindowTitle = '${psTitle}'\r\n$PID | Out-File -FilePath '${pidFile}' -NoNewline -Encoding ascii\r\n${psClaudeCmd}\r\n`,
       "utf-8",
     );
 
@@ -1423,6 +1426,8 @@ async function spawnClaudeSession(options: SpawnOptions = {}): Promise<void> {
     const escapeForAppleScript = (cmd: string) => cmd.replace(/\\/g, "\\\\");
     const escapedShellCmd = escapeForAppleScript(shellCmd);
 
+    const tabTitle = `${sessionName} on ${branchName}`.replace(/"/g, '\\"');
+
     if (terminalApp === "iTerm") {
       try {
         execSync(
@@ -1431,6 +1436,7 @@ tell application "iTerm"
   tell current window
     set newTab to (create tab with default profile)
     tell current session of newTab
+      set name to "${tabTitle}"
       write text "${escapedShellCmd}"
     end tell
   end tell
@@ -1446,6 +1452,7 @@ tell application "iTerm"
   activate
   create window with default profile
   tell current session of current window
+    set name to "${tabTitle}"
     write text "${escapedShellCmd}"
   end tell
 end tell
@@ -1460,10 +1467,15 @@ EOF`,
         }
       }
     } else {
-      execSync(`osascript -e 'tell application "Terminal" to do script "${escapedShellCmd}"'`, {
-        cwd: rootDir(),
-        stdio: "inherit",
-      });
+      execSync(
+        `osascript <<EOF
+tell application "Terminal"
+  do script "${escapedShellCmd}"
+  set custom title of selected tab of front window to "${tabTitle}"
+end tell
+EOF`,
+        { cwd: rootDir(), stdio: "inherit" },
+      );
     }
 
     sessionProcess = spawn("echo", ["Session started in new terminal"], {
