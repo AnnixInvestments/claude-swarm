@@ -225,6 +225,25 @@ If any step fails, the summary prints immediately and the script exits with the 
 
 The `src/bin.ts` script provides hash-based auto-install/build: it only runs `npm install` or `npm run build` when source files have changed since the last run. This means subsequent invocations start instantly. When installed from npm, the build step is skipped entirely since pre-built `dist/` is included.
 
+## Claude Code auto-update
+
+On startup, the swarm checks whether the locally-installed `@anthropic-ai/claude-code` matches the latest published version. The check runs in `run.sh`, `run.ps1`, and `src/bin.ts` so it fires regardless of which entry point you use.
+
+- **Patch bumps** (e.g. `1.4.7 -> 1.4.8`) auto-install via `npm i -g @anthropic-ai/claude-code`. Patch releases are low-risk.
+- **Minor / major bumps** print a banner with the manual install command and do not auto-install.
+- **Quiet on no-op** — nothing is printed when the local version is already current.
+- **Cached for 24h** in `~/.claude/swarm-update-check` so the network call only runs once per day.
+- **5s timeout** wraps the `npm view` lookup (or `Invoke-WebRequest` on PowerShell) so an offline or slow registry does not block startup.
+
+### Configuration
+
+| Knob | Where | Effect |
+|---|---|---|
+| `CLAUDE_SWARM_NO_UPDATE_CHECK=1` | env var | Skip the check entirely. Useful for CI / scripted runs. |
+| `--check-updates` | CLI flag | Force the check even if the 24h cache is still fresh. |
+
+The check works on macOS, Linux, and Windows. On macOS the script falls back to `gtimeout` or no-timeout if the GNU `timeout` binary is not installed.
+
 ## Worktree workflow
 
 All parallel work uses git worktrees for isolation — never bare branches. Each worktree gets its own directory and `claude/*` branch so multiple sessions can run without stepping on each other.

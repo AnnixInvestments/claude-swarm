@@ -6,3 +6,4 @@ dist/
 .claude-swarm-*.log
 .idea
 pnpm-lock.yaml
+.claude/worktrees/

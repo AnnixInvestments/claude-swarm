@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { execSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -54,5 +55,83 @@ if (existsSync(srcDir)) {
     writeFileSync(buildHashFile, srcHash);
   }
 }
+
+const CLAUDE_CODE_PACKAGE = "@anthropic-ai/claude-code";
+const updateCacheFile = join(homedir(), ".claude", "swarm-update-check");
+const oneDaySeconds = 86400;
+
+const versionRegex = /(\d+)\.(\d+)\.(\d+)/;
+
+const localClaudeVersion = (): string | null => {
+  try {
+    const out = execSync("claude --version", {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const match = out.match(versionRegex);
+    return match ? match[0] : null;
+  } catch {
+    return null;
+  }
+};
+
+const remoteClaudeVersion = (): string | null => {
+  try {
+    const out = execSync(`npm view ${CLAUDE_CODE_PACKAGE} version`, {
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return out || null;
+  } catch {
+    return null;
+  }
+};
+
+const writeUpdateStamp = (): void => {
+  try {
+    mkdirSync(dirname(updateCacheFile), { recursive: true });
+    writeFileSync(updateCacheFile, String(Math.floor(Date.now() / 1000)));
+  } catch {}
+};
+
+const cacheIsFresh = (): boolean => {
+  if (!existsSync(updateCacheFile)) return false;
+  const last = Number(stored(updateCacheFile));
+  if (!Number.isFinite(last) || last <= 0) return false;
+  return Math.floor(Date.now() / 1000) - last < oneDaySeconds;
+};
+
+const minorOf = (v: string): string => v.split(".").slice(0, 2).join(".");
+
+const checkClaudeCodeUpdate = (force: boolean): void => {
+  if (process.env.CLAUDE_SWARM_NO_UPDATE_CHECK === "1") return;
+  if (!force && cacheIsFresh()) return;
+
+  const local = localClaudeVersion();
+  const remote = remoteClaudeVersion();
+  if (!local || !remote) return;
+
+  if (local === remote) {
+    writeUpdateStamp();
+    return;
+  }
+
+  if (minorOf(local) === minorOf(remote)) {
+    console.error(`Auto-updating Claude Code (patch): ${local} -> ${remote}`);
+    try {
+      execSync(`npm i -g ${CLAUDE_CODE_PACKAGE}`, { stdio: "ignore" });
+      writeUpdateStamp();
+    } catch {}
+    return;
+  }
+
+  console.error("");
+  console.error(`Claude Code update available: ${local} -> ${remote} (minor/major)`);
+  console.error(`  npm i -g ${CLAUDE_CODE_PACKAGE}`);
+  console.error("");
+};
+
+checkClaudeCodeUpdate(process.argv.includes("--check-updates"));
 
 await import(pathToFileURL(join(projectRoot, "dist", "index.js")).href);
