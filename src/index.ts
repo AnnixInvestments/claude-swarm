@@ -2715,18 +2715,20 @@ async function promptAndStartWithProfile(): Promise<void> {
     return;
   }
 
-  const profileChoices = [
+  const profileChoices: Array<{ name: string; value: string }> = [
     { name: "Local (default)", value: "__local__" },
     ...profileNames.map((name) => ({
       name: `${name} — ${swarmConfig.profiles?.[name]?.description ?? ""}`,
       value: name,
     })),
+    { name: chalk.dim("← Back"), value: Sentinel.Cancel },
   ];
 
-  const chosen = await select({
-    message: "Which environment?",
-    choices: profileChoices,
-  });
+  const chosen = await selectWithEscape("Which environment?", profileChoices, Sentinel.Cancel);
+
+  if (chosen === Sentinel.Cancel) {
+    return;
+  }
 
   initProject(currentProject, chosen === "__local__" ? undefined : chosen);
   log.print(chalk.yellow("  Starting apps..."));
