@@ -647,7 +647,7 @@ function killMultipleProcesses(
 }
 
 const terminalWidth = () => process.stdout.columns || 80;
-const boxContentWidth = () => terminalWidth() - 2;
+const boxContentWidth = () => Math.max(0, terminalWidth() - 2);
 
 const BORDER_COLOR = "#0077cc";
 const isEmbeddedTerminal =
@@ -754,7 +754,16 @@ function printFooter(): void {
 function printSection(title: string): void {
   const width = boxContentWidth();
   const text = `  ${title}`;
-  log.print(b.content("│") + chalk.bold(text) + " ".repeat(width - text.length) + b.content("│"));
+  const visibleLength = text.replace(
+    new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g"),
+    "",
+  ).length;
+  log.print(
+    b.content("│") +
+      chalk.bold(text) +
+      " ".repeat(Math.max(0, width - visibleLength)) +
+      b.content("│"),
+  );
 }
 
 function printBoxLine(content: string, indent = 2): void {
@@ -2151,9 +2160,7 @@ async function showStatus(): Promise<void> {
   if (hasRealAdapters) {
     const profileLabel = activeProfileName
       ? (() => {
-          const swarmConfig = loadSwarmConfig(currentProject.path);
-          const desc = swarmConfig.profiles?.[activeProfileName]?.description;
-          const label = desc ?? activeProfileName.toUpperCase();
+          const label = activeProfileName.toUpperCase();
           return `  ${chalk.bgRed.white(` ${label} `)}`;
         })()
       : "";
