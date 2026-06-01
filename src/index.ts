@@ -2301,7 +2301,6 @@ async function rawSelect<T extends string>(
 
     if (onRefresh) {
       refreshTimer = setInterval(async () => {
-        if (selectedIndex !== 0) return;
         try {
           await onRefresh(choices.length);
         } catch {}
