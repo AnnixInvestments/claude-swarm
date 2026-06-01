@@ -38,7 +38,7 @@
     "format:check": "biome format src",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "release": "npm version patch -m 'feat: bump to %s' && git push --follow-tags"
+    "release": "npm version patch -m \"feat: bump to %s\" && git push --follow-tags"
   },
   "dependencies": {
     "@inquirer/prompts": "^8.2.0",
