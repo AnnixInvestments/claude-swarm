@@ -52,6 +52,13 @@ function Get-RemoteClaudeVersion {
     }
 }
 
+function Resolve-NpmCommand {
+    $cmd = Get-Command npm.cmd -ErrorAction SilentlyContinue
+    if (-not $cmd) { $cmd = Get-Command npm -ErrorAction SilentlyContinue }
+    if ($cmd) { return $cmd.Source }
+    return "npm.cmd"
+}
+
 function Invoke-ClaudeCodeUpdateCheck {
     param([string[]]$ScriptArgs)
 
@@ -76,7 +83,7 @@ function Invoke-ClaudeCodeUpdateCheck {
 
     if ($localMinor -eq $remoteMinor) {
         Write-Host "Auto-updating Claude Code (patch): $local -> $remote"
-        $proc = Start-Process -FilePath "npm" -ArgumentList "i", "-g", $ClaudeCodePackage `
+        $proc = Start-Process -FilePath (Resolve-NpmCommand) -ArgumentList "i", "-g", $ClaudeCodePackage `
             -NoNewWindow -Wait -PassThru `
             -RedirectStandardOutput ([System.IO.Path]::GetTempFileName()) `
             -RedirectStandardError ([System.IO.Path]::GetTempFileName())
