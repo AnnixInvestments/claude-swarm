@@ -491,6 +491,118 @@ function formatBranchDisplay(branch: Branch, current: string): string {
   return `${marker} ${name} ${status} ${time}`;
 }
 
+interface WindowsProcess {
+  pid: number;
+  parentPid: number;
+  name: string;
+  commandLine: string;
+}
+
+interface SessionLabel {
+  name: string;
+  branch: string;
+  project: string;
+}
+
+const WINDOWS_TERMINAL_HOSTS = new Set([
+  "windowsterminal.exe",
+  "openconsole.exe",
+  "conhost.exe",
+  "explorer.exe",
+  "code.exe",
+  "cursor.exe",
+  "idea64.exe",
+  "webstorm64.exe",
+  "wezterm-gui.exe",
+  "alacritty.exe",
+  "mintty.exe",
+  "hyper.exe",
+  "tabby.exe",
+]);
+
+function isClaudeDesktopProcess(commandLine: string): boolean {
+  const cmd = commandLine.toLowerCase();
+  return cmd.includes("--type=") || cmd.includes("\\anthropicclaude\\");
+}
+
+function windowsProcessTable(): Map<number, WindowsProcess> {
+  const script =
+    "Get-CimInstance Win32_Process | ForEach-Object { " +
+    "$keep = ($_.Name -like 'claude*') -or ($_.CommandLine -like '*claude-swarm-session-*'); " +
+    "[pscustomobject]@{ i = $_.ProcessId; p = $_.ParentProcessId; n = $_.Name; c = $(if ($keep) { $_.CommandLine } else { $null }) } " +
+    "} | ConvertTo-Json -Compress";
+  const encoded = Buffer.from(script, "utf16le").toString("base64");
+  const output = exec(`powershell -NoProfile -NonInteractive -EncodedCommand ${encoded}`, {
+    silent: true,
+    timeout: 15000,
+  });
+  if (!output) return new Map();
+  const parsed = JSON.parse(output);
+  const rows: Array<{ i: number; p: number; n: string | null; c: string | null }> = Array.isArray(
+    parsed,
+  )
+    ? parsed
+    : [parsed];
+  return new Map(
+    rows.map((r) => [
+      r.i,
+      { pid: r.i, parentPid: r.p, name: (r.n ?? "").toLowerCase(), commandLine: r.c ?? "" },
+    ]),
+  );
+}
+
+function windowsAncestors(
+  table: Map<number, WindowsProcess>,
+  process: WindowsProcess,
+  visited: Set<number> = new Set([process.pid]),
+): WindowsProcess[] {
+  const parent = table.get(process.parentPid);
+  if (!parent || visited.has(parent.pid) || visited.size > 20) return [];
+  visited.add(parent.pid);
+  return [parent, ...windowsAncestors(table, parent, visited)];
+}
+
+function swarmSessionLabel(launcher: WindowsProcess): SessionLabel | null {
+  const managed = Array.from(managedSessions.values()).find((s) => launcherPid(s) === launcher.pid);
+  if (managed) {
+    return { name: managed.name, branch: managed.branch, project: managed.project.name };
+  }
+  const scriptMatch = launcher.commandLine.match(/-File\s+"?([^"]*claude-swarm-session-\d+\.ps1)/i);
+  if (!scriptMatch || !existsSync(scriptMatch[1])) return null;
+  const titleMatch = readFileSync(scriptMatch[1], "utf-8").match(
+    /WindowTitle\s*=\s*'(.+) on (\S+)'/,
+  );
+  if (!titleMatch) return null;
+  return { name: titleMatch[1], branch: titleMatch[2], project: currentProject.name };
+}
+
+function detectWindowsClaudeSessions(): Session[] {
+  const table = windowsProcessTable();
+  const cliSessions = Array.from(table.values()).filter(
+    (p) =>
+      p.name.startsWith("claude") &&
+      p.commandLine !== "" &&
+      !p.commandLine.includes("claude-swarm") &&
+      !isClaudeDesktopProcess(p.commandLine),
+  );
+  return cliSessions.map((session) => {
+    const ancestors = windowsAncestors(table, session);
+    const host = ancestors.find((a) => WINDOWS_TERMINAL_HOSTS.has(a.name)) ?? null;
+    const launcher = ancestors.find((a) => a.commandLine.includes("claude-swarm-session-")) ?? null;
+    const label = launcher ? swarmSessionLabel(launcher) : null;
+    return {
+      pid: session.pid,
+      name: label ? label.name : `PID ${session.pid}`,
+      branch: label ? label.branch : "unknown",
+      project: label ? label.project : "unknown",
+      status: "working" as const,
+      lastActivity: "active",
+      tty: host ? host.name.replace(/\.exe$/, "") : null,
+      isOrphaned: host === null,
+    };
+  });
+}
+
 function detectClaudeSessions(): Session[] {
   const seenPids = new Set<number>();
   const sessions: Session[] = [];
@@ -556,49 +668,7 @@ function detectClaudeSessions(): Session[] {
       return result;
     }
     if (platform === "win32") {
-      const output = exec('tasklist /fi "IMAGENAME eq claude*" /fo csv', { silent: true });
-      const lines = output
-        .split("\n")
-        .filter((line) => line.toLowerCase().includes("claude") && !line.includes("claude-swarm"));
-
-      const claudeProcesses: Array<{ processName: string; pid: number }> = [];
-      for (const line of lines) {
-        const match = line.match(/"([^"]+)","(\d+)"/);
-        if (!match) continue;
-
-        const processName = match[1];
-        const pid = Number.parseInt(match[2], 10);
-        if (Number.isNaN(pid) || seenPids.has(pid)) continue;
-        if (!processName.toLowerCase().includes("claude")) continue;
-        seenPids.add(pid);
-        claudeProcesses.push({ processName, pid });
-      }
-
-      const pidsWithConsole = new Set<number>();
-      if (claudeProcesses.length > 0) {
-        const pidList = claudeProcesses.map((p) => p.pid).join(",");
-        const psOutput = exec(
-          `powershell -NoProfile -Command "${pidList} | ForEach-Object { $p = Get-Process -Id $_ -ErrorAction SilentlyContinue; if ($p -and $p.MainWindowHandle -ne 0) { $_ } }"`,
-          { silent: true, timeout: 5000 },
-        );
-        for (const line of psOutput.split("\n")) {
-          const pid = Number.parseInt(line.trim(), 10);
-          if (!Number.isNaN(pid)) {
-            pidsWithConsole.add(pid);
-          }
-        }
-      }
-
-      return claudeProcesses.map(({ pid }) => ({
-        pid,
-        name: `PID ${pid}`,
-        branch: "unknown",
-        project: "unknown",
-        status: "working" as const,
-        lastActivity: "active",
-        tty: pidsWithConsole.has(pid) ? "console" : null,
-        isOrphaned: !pidsWithConsole.has(pid),
-      }));
+      return detectWindowsClaudeSessions();
     }
   } catch {
     return [];
@@ -1518,6 +1588,50 @@ EOF`,
   }
 }
 
+const SESSION_LAUNCH_GRACE_MS = 60000;
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+function launcherPid(session: ManagedSession): number | null {
+  if (!session.pidFile || !existsSync(session.pidFile)) return null;
+  const pid = Number.parseInt(readFileSync(session.pidFile, "utf-8").trim(), 10);
+  return Number.isNaN(pid) ? null : pid;
+}
+
+function isManagedSessionAlive(session: ManagedSession): boolean {
+  if (!session.pidFile) return session.status === "running";
+  const pid = launcherPid(session);
+  if (pid === null) return Date.now() - session.startTime.getTime() < SESSION_LAUNCH_GRACE_MS;
+  return isProcessAlive(pid);
+}
+
+function removeSessionLauncherFiles(pidFile: string): void {
+  for (const f of [pidFile, pidFile.replace(/\.pid$/, ".ps1")]) {
+    try {
+      unlinkSync(f);
+    } catch {
+      log.debug(`Launcher file already gone: ${f}`);
+    }
+  }
+}
+
+function pruneDeadManagedSessions(): void {
+  const deadSessions = Array.from(managedSessions.entries()).filter(
+    ([, session]) => !isManagedSessionAlive(session),
+  );
+  for (const [sessionId, session] of deadSessions) {
+    managedSessions.delete(sessionId);
+    if (session.pidFile) removeSessionLauncherFiles(session.pidFile);
+  }
+}
+
 async function terminateSession(sessionId: string): Promise<void> {
   const session = managedSessions.get(sessionId);
   if (!session) {
@@ -1686,6 +1800,7 @@ async function pullChangesFromBranch(branch: string): Promise<void> {
 
 async function showSessionsMenu(): Promise<void> {
   while (true) {
+    pruneDeadManagedSessions();
     const detectedSessions = detectClaudeSessions();
     const managed = Array.from(managedSessions.values());
 
@@ -2118,6 +2233,7 @@ async function showSessionsMenu(): Promise<void> {
 }
 
 async function showStatus(): Promise<void> {
+  pruneDeadManagedSessions();
   const branches = claudeBranches();
   const current = currentBranch();
   const managed = Array.from(managedSessions.values());
