@@ -38,6 +38,8 @@ interface Branch {
   behind: number;
   lastCommit: string;
   lastCommitTime: string;
+  /** False when the branch exists but has no checked-out worktree directory. */
+  hasWorktree?: boolean;
 }
 
 interface Session {
@@ -440,11 +442,31 @@ function currentBranch(): string {
   return exec("git branch --show-current");
 }
 
+// A branch is NOT a worktree. The status screen printed a "Worktrees" heading
+// and then listed plain branches, so a branch whose directory had been removed
+// still looked like an open checkout - fourteen rows for four real worktrees.
+function worktreeBranchPaths(): Map<string, string> {
+  const output = exec("git worktree list --porcelain", { silent: true });
+  const paths = new Map<string, string>();
+  let currentPath: string | null = null;
+  for (const line of output.split("\n")) {
+    if (line.startsWith("worktree ")) {
+      currentPath = line.slice("worktree ".length).trim();
+    } else if (line.startsWith("branch ") && currentPath) {
+      const name = line.slice("branch ".length).trim().replace(/^refs\/heads\//, "");
+      paths.set(name, currentPath);
+    }
+  }
+  return paths;
+}
+
 function claudeBranches(): Branch[] {
   const localOutput = exec(
     'git branch --format="%(refname:short)|%(committerdate:relative)|%(subject)"',
   );
   const localBranches = localOutput.split("\n").filter((line) => line.trim());
+
+  const worktreePaths = worktreeBranchPaths();
 
   return localBranches
     .filter((line) => line.startsWith(claudeBranchPrefix))
@@ -461,6 +483,7 @@ function claudeBranches(): Branch[] {
         behind: Number.parseInt(behindCount, 10) || 0,
         lastCommit: subject ?? "",
         lastCommitTime: time ?? "",
+        hasWorktree: worktreePaths.has(name),
       };
     });
 }
@@ -473,7 +496,12 @@ function allBranches(): string[] {
 function formatBranchDisplay(branch: Branch, current: string): string {
   const isCurrent = branch.name === current;
   const marker = isCurrent ? chalk.green("●") : chalk.dim("○");
-  const name = isCurrent ? chalk.green(branch.name) : branch.name;
+  const name = isCurrent
+    ? chalk.green(branch.name)
+    : branch.hasWorktree === false
+      ? chalk.dim(branch.name)
+      : branch.name;
+  const worktreeNote = branch.hasWorktree === false ? chalk.dim(" (branch only)") : "";
 
   let status = "";
   if (branch.ahead > 0 && branch.behind > 0) {
@@ -488,7 +516,7 @@ function formatBranchDisplay(branch: Branch, current: string): string {
 
   const time = branch.lastCommitTime ? chalk.dim(`(${branch.lastCommitTime})`) : "";
 
-  return `${marker} ${name} ${status} ${time}`;
+  return `${marker} ${name}${worktreeNote} ${status} ${time}`;
 }
 
 interface WindowsProcess {
@@ -2244,9 +2272,12 @@ async function showStatus(): Promise<void> {
   printBoxLine(chalk.green(current));
   printEmptyLine();
 
-  printSection("Worktrees");
+  const withWorktree = branches.filter((b) => b.hasWorktree !== false).length;
+  printSection(
+    `Branches (${withWorktree} with a worktree, ${branches.length - withWorktree} branch-only)`,
+  );
   if (branches.length === 0) {
-    printBoxLine(chalk.dim("No active worktrees"));
+    printBoxLine(chalk.dim("No claude branches"));
   } else {
     for (const branch of branches) {
       const display = formatBranchDisplay(branch, current);
